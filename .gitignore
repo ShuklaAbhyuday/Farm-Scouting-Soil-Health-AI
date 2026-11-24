@@ -1,0 +1,40 @@
+# =====================================================
+# EPICS Farm Scouting — .gitignore
+# =====================================================
+
+# --- NEVER commit credentials or secrets ---
+.env
+*.env
+*.pem
+*.json.key
+credentials.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# --- Database ---
+*.db
+*.sqlite3
+
+# --- Frontend ---
+node_modules/
+frontend/dist/
+frontend/.env
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+
+# --- OS ---
+.DS_Store
+Thumbs.db
