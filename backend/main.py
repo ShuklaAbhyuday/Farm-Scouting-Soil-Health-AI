@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.database import init_db
@@ -6,9 +7,21 @@ from backend.services.gee_service import get_gee_service
 
 app = FastAPI(title="EPICS Farm Scouting API")
 
+import os
+
+# Allow localhost for dev, plus any Vercel deployment URL
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
+# Add production Vercel URL from env if set
+vercel_url = os.getenv("FRONTEND_URL", "")
+if vercel_url:
+    ALLOWED_ORIGINS.append(vercel_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
