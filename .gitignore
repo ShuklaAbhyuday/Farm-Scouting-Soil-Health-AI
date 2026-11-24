@@ -21,9 +21,10 @@ dist/
 build/
 .pytest_cache/
 
-# --- Database ---
+# --- Database & Generated Files ---
 *.db
 *.sqlite3
+generated_reports/
 
 # --- Frontend ---
 node_modules/

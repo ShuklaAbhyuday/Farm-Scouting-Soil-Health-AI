@@ -1,5 +1,6 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { FieldProvider } from './context/FieldContext';
 import Layout from './components/Layout/Layout';
 import Dashboard from './pages/Dashboard';
 import FarmList from './pages/FarmList';
@@ -13,22 +14,24 @@ import Reports from './pages/Reports';
 
 const App: React.FC = () => {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<Dashboard />} />
-          <Route path="farms" element={<FarmList />} />
-          <Route path="farms/new" element={<FarmCreate />} />
-          <Route path="map" element={<FieldMap />} />
-          <Route path="hotspots" element={<Navigate to="/map" />} />
-          <Route path="hotspots/:id" element={<HotspotDetail />} />
-          <Route path="soil" element={<SoilSamples />} />
-          <Route path="recommendations" element={<Recommendations />} />
-          <Route path="history" element={<History />} />
-          <Route path="reports" element={<Reports />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <FieldProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Layout />}>
+            <Route index element={<Dashboard />} />
+            <Route path="farms" element={<FarmList />} />
+            <Route path="farms/new" element={<FarmCreate />} />
+            <Route path="map" element={<FieldMap />} />
+            <Route path="hotspots" element={<HotspotDetail />} />
+            <Route path="hotspots/:id" element={<HotspotDetail />} />
+            <Route path="soil" element={<SoilSamples />} />
+            <Route path="recommendations" element={<Recommendations />} />
+            <Route path="history" element={<History />} />
+            <Route path="reports" element={<Reports />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </FieldProvider>
   );
 };
 

@@ -91,11 +91,11 @@ def health_check():
     return {"status": "ok"}
 
 app.include_router(users.router, prefix="/api/users", tags=["users"])
-app.include_router(farms.router, prefix="/api/farms", tags=["farms"])
-app.include_router(fields.router, prefix="/api/fields", tags=["fields"])
-app.include_router(satellite.router, prefix="/api", tags=["satellite"]) # includes /fields/{id}/analyze
-app.include_router(hotspots.router, prefix="/api/hotspots", tags=["hotspots"])
-app.include_router(soil_samples.router, prefix="/api/soil-samples", tags=["soil_samples"])
-app.include_router(recommendations.router, prefix="/api/recommendations", tags=["recommendations"])
-app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
+app.include_router(farms.router, prefix="/api", tags=["farms"])
+app.include_router(fields.router, prefix="/api", tags=["fields"])
+app.include_router(satellite.router, prefix="/api", tags=["satellite"])
+app.include_router(hotspots.router, prefix="/api", tags=["hotspots"])
+app.include_router(soil_samples.router, prefix="/api", tags=["soil_samples"])
+app.include_router(recommendations.router, prefix="/api", tags=["recommendations"])
+app.include_router(reports.router, prefix="/api", tags=["reports"])
 app.include_router(dashboard.router, prefix="/api", tags=["dashboard"])
