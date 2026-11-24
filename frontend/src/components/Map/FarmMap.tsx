@@ -20,7 +20,7 @@ const FarmMap: React.FC<Props> = ({ boundary, hotspots = [], onHotspotClick }) =
         <LayersControl position="topright">
           <LayersControl.BaseLayer checked name="Google Satellite">
             <TileLayer 
-              url="http://mt0.google.com/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}" 
+              url="https://mt0.google.com/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}" 
               attribution="&copy; Google Maps" 
               maxZoom={20}
             />
