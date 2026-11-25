@@ -20,6 +20,16 @@ export interface LatLngPoint {
   lng: number;
 }
 
+interface SearchSuggestion {
+  place_id: number;
+  display_name: string;
+  lat: string;
+  lon: string;
+  type?: string;
+  addresstype?: string;
+  boundingbox?: [string, string, string, string];
+}
+
 interface InteractiveFieldMapProps {
   boundary?: any;
   hotspots?: Hotspot[];
@@ -125,6 +135,9 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
 }) => {
   const [draftPoints, setDraftPoints] = useState<LatLngPoint[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightedIdx, setHighlightedIdx] = useState<number>(-1);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [flyTarget, setFlyTarget] = useState<{ center: [number, number]; zoom: number } | null>(null);
@@ -132,6 +145,50 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
   const parsedBoundary = useMemo(() => parseGeoJSON(boundary), [boundary]);
 
   const draftAreaHa = useMemo(() => computePolygonAreaHa(draftPoints), [draftPoints]);
+
+  useEffect(() => {
+    const q = searchQuery.trim();
+    const isCoord = /^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/.test(q);
+    if (q.length < 2 || isCoord) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const resp = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&q=${encodeURIComponent(q)}`,
+          { signal: controller.signal }
+        );
+        const data: SearchSuggestion[] = await resp.json();
+        setSuggestions(Array.isArray(data) ? data : []);
+        setHighlightedIdx(-1);
+        setShowSuggestions(Array.isArray(data) && data.length > 0);
+      } catch (err: any) {
+        if (err?.name !== 'AbortError') {
+          setSuggestions([]);
+        }
+      }
+    }, 280);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [searchQuery]);
+
+  const selectSuggestion = (item: SearchSuggestion) => {
+    const lat = parseFloat(item.lat);
+    const lon = parseFloat(item.lon);
+    const kind = item.addresstype || item.type || '';
+    const zoom = ['village', 'hamlet', 'suburb', 'neighbourhood', 'farm'].includes(kind) ? 15 : 13;
+    setSearchQuery(item.display_name.split(',')[0]);
+    setShowSuggestions(false);
+    setSearchError(null);
+    setFlyTarget({ center: [lat, lon], zoom });
+  };
 
   useEffect(() => {
     if (clearDraftSignal > 0) {
@@ -169,14 +226,25 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (highlightedIdx >= 0 && suggestions[highlightedIdx]) {
+      selectSuggestion(suggestions[highlightedIdx]);
+      return;
+    }
+
     const q = searchQuery.trim();
     if (!q) return;
 
     // Support direct "lat, lng" input too
     const coordMatch = q.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
     if (coordMatch) {
+      setShowSuggestions(false);
       setSearchError(null);
       setFlyTarget({ center: [parseFloat(coordMatch[1]), parseFloat(coordMatch[2])], zoom: 15 });
+      return;
+    }
+
+    if (suggestions.length > 0) {
+      selectSuggestion(suggestions[0]);
       return;
     }
 
@@ -184,14 +252,11 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
     setSearchError(null);
     try {
       const resp = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`
+        `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&q=${encodeURIComponent(q)}`
       );
-      const data = await resp.json();
+      const data: SearchSuggestion[] = await resp.json();
       if (data && data.length > 0) {
-        setFlyTarget({
-          center: [parseFloat(data[0].lat), parseFloat(data[0].lon)],
-          zoom: 15,
-        });
+        selectSuggestion(data[0]);
       } else {
         setSearchError('Location not found. Try a city, village, or "lat, lng".');
       }
@@ -199,6 +264,19 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
       setSearchError('Search temporarily unavailable.');
     } finally {
       setSearching(false);
+    }
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showSuggestions || suggestions.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightedIdx((prev) => (prev + 1) % suggestions.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightedIdx((prev) => (prev <= 0 ? suggestions.length - 1 : prev - 1));
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
     }
   };
 
@@ -220,15 +298,26 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
 
   return (
     <div className={`map-shell ${drawingMode ? 'is-drawing' : ''}`} style={{ height }}>
-      {/* Floating Top Search + Quick Map Actions */}
-      <div className="map-floating-top">
+      {/* Floating Top Search + Autocomplete Suggestions */}
+      <div className="map-floating-top" onClick={(e) => e.stopPropagation()}>
         <form onSubmit={handleSearch} className="map-search-bar">
           <input
             type="text"
-            placeholder="Jump to city, village, or lat, lng..."
+            placeholder="Search city, village, or lat, lng..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setSearchError(null);
+            }}
+            onFocus={() => {
+              if (suggestions.length > 0) setShowSuggestions(true);
+            }}
+            onBlur={() => {
+              setTimeout(() => setShowSuggestions(false), 180);
+            }}
+            onKeyDown={handleSearchKeyDown}
             aria-label="Search map location"
+            autoComplete="off"
           />
           <button type="submit" disabled={searching}>
             {searching ? '...' : 'Go'}
@@ -237,6 +326,35 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
             📍
           </button>
         </form>
+
+        {showSuggestions && suggestions.length > 0 && (
+          <div className="map-suggestions" role="listbox" aria-label="Place suggestions">
+            {suggestions.map((item, idx) => {
+              const parts = item.display_name.split(',');
+              const title = parts[0]?.trim();
+              const subtitle = parts.slice(1).join(',').trim();
+              const kind = item.addresstype || item.type || 'place';
+              return (
+                <button
+                  key={item.place_id}
+                  type="button"
+                  className={`map-suggestion-item ${idx === highlightedIdx ? 'highlighted' : ''}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    selectSuggestion(item);
+                  }}
+                >
+                  <div className="map-suggestion-title">
+                    <span>{title}</span>
+                    <span className="map-suggestion-type">{kind}</span>
+                  </div>
+                  {subtitle && <div className="map-suggestion-sub">{subtitle}</div>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {searchError && <div className="map-toast-err">{searchError}</div>}
       </div>
 

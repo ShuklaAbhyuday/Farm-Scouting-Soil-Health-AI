@@ -121,6 +121,29 @@ def update_field(field_id: int, payload: FieldUpdate, db: Session = Depends(get_
     return _serialize_field(field)
 
 
+@router.delete("/fields/{field_id}")
+def delete_field(field_id: int, db: Session = Depends(get_db)):
+    from backend.models.recommendation import Recommendation
+    from backend.models.report import Report
+    from backend.models.soil_sample import SoilSample
+
+    field = db.query(Field).filter(Field.id == field_id).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    obs_ids = [o.id for o in db.query(SatelliteObservation).filter(SatelliteObservation.field_id == field_id).all()]
+    if obs_ids:
+        db.query(IndexResult).filter(IndexResult.observation_id.in_(obs_ids)).delete(synchronize_session=False)
+    db.query(Hotspot).filter(Hotspot.field_id == field_id).delete(synchronize_session=False)
+    db.query(Recommendation).filter(Recommendation.field_id == field_id).delete(synchronize_session=False)
+    db.query(SoilSample).filter(SoilSample.field_id == field_id).delete(synchronize_session=False)
+    db.query(Report).filter(Report.field_id == field_id).delete(synchronize_session=False)
+    db.query(SatelliteObservation).filter(SatelliteObservation.field_id == field_id).delete(synchronize_session=False)
+    db.delete(field)
+    db.commit()
+    return {"deleted": True, "id": field_id}
+
+
 @router.get("/fields/{field_id}/history")
 def get_field_history(field_id: int, db: Session = Depends(get_db)):
     field = db.query(Field).filter(Field.id == field_id).first()

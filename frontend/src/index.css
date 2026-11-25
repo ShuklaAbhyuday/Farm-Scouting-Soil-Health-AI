@@ -385,6 +385,66 @@ select.input:focus {
   border-radius: 6px;
 }
 
+.map-suggestions {
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  max-height: 240px;
+  overflow-y: auto;
+  width: 310px;
+  max-width: 100%;
+}
+
+.map-suggestion-item {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-family: inherit;
+}
+
+.map-suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.map-suggestion-item:hover,
+.map-suggestion-item.highlighted {
+  background: var(--accent-soft);
+}
+
+.map-suggestion-title {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.map-suggestion-sub {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-suggestion-type {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .map-floating-bottom {
   position: absolute;
   bottom: 16px;

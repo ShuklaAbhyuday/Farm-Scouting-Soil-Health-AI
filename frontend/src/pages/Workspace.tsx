@@ -3,7 +3,7 @@ import InteractiveFieldMap, { computePolygonAreaHa } from '../components/Map/Int
 import TimeSeriesChart from '../components/Charts/TimeSeriesChart';
 import api from '../services/api';
 import { useFieldContext } from '../context/FieldContext';
-import { createField, getField } from '../services/fieldService';
+import { createField, deleteField, getField } from '../services/fieldService';
 import { analyzeField } from '../services/satelliteService';
 import { getDashboard } from '../services/dashboardService';
 import { getHotspots } from '../services/hotspotService';
@@ -383,6 +383,17 @@ const Workspace: React.FC = () => {
     }
   };
 
+  const handleDeleteCurrentField = async () => {
+    if (allFields.length <= 1) return;
+    try {
+      await deleteField(selectedFieldId);
+      const remaining = allFields.find((f) => f.id !== selectedFieldId);
+      await refreshFarms(remaining?.id);
+    } catch (err) {
+      console.error('Failed to delete field:', err);
+    }
+  };
+
   const levelBadge = (lvl: string) => {
     if (lvl === 'low') return 'badge-severe';
     if (lvl === 'medium') return 'badge-healthy';
@@ -453,6 +464,17 @@ const Workspace: React.FC = () => {
                 </option>
               ))}
             </select>
+          )}
+          {allFields.length > 1 && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{ color: 'var(--red)' }}
+              onClick={handleDeleteCurrentField}
+              title="Delete currently selected field"
+            >
+              Delete
+            </button>
           )}
           <button type="button" className="btn btn-sm" onClick={handleStartNewField}>
             + Draw New Field
