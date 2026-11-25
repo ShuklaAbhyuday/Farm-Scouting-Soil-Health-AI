@@ -28,8 +28,9 @@ def get_dashboard(field_id: int, db: Session = Depends(get_db)):
         .first()
     )
 
-    # Hotspots for the field
+    # Hotspots for the field (all measured zones vs stressed zones)
     hotspots = db.query(Hotspot).filter(Hotspot.field_id == field_id).all()
+    stressed_hotspots = [h for h in hotspots if h.severity != "healthy"]
     critical_hotspots = [h for h in hotspots if h.severity == "severe"]
 
     # Latest index values
@@ -115,7 +116,7 @@ def get_dashboard(field_id: int, db: Session = Depends(get_db)):
         "latest_observation_date": latest_date,
         "overall_health": overall_health,
         "health_score": round(avg_score, 1),
-        "total_hotspots": len(hotspots),
+        "total_hotspots": len(stressed_hotspots),
         "critical_hotspots": len(critical_hotspots),
         "ndvi_mean": round(ndvi_mean, 4) if ndvi_mean is not None else None,
         "ndmi_mean": round(ndmi_mean, 4) if ndmi_mean is not None else None,

@@ -63,7 +63,7 @@ const Workspace: React.FC = () => {
   const [fieldName, setFieldName] = useState<string>('My Field Plot');
   const [cropType, setCropType] = useState<string>('Wheat');
   const [startDate] = useState<string>('2023-01-01');
-  const [endDate, setEndDate] = useState<string>('2024-12-31');
+  const [endDate, setEndDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
 
   // Stage 2: Satellite Data State
   const [activeBoundary, setActiveBoundary] = useState<any>(null);
