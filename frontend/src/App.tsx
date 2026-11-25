@@ -8,6 +8,7 @@ import FarmCreate from './pages/FarmCreate';
 import FieldMap from './pages/FieldMap';
 import HotspotDetail from './pages/HotspotDetail';
 import SoilSamples from './pages/SoilSamples';
+import CropRecommendation from './pages/CropRecommendation';
 import Recommendations from './pages/Recommendations';
 import History from './pages/History';
 import Reports from './pages/Reports';
@@ -25,6 +26,7 @@ const App: React.FC = () => {
             <Route path="hotspots" element={<HotspotDetail />} />
             <Route path="hotspots/:id" element={<HotspotDetail />} />
             <Route path="soil" element={<SoilSamples />} />
+            <Route path="crop-recommendation" element={<CropRecommendation />} />
             <Route path="recommendations" element={<Recommendations />} />
             <Route path="history" element={<History />} />
             <Route path="reports" element={<Reports />} />

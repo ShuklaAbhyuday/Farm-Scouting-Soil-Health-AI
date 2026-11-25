@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { createSoilSample } from '../../services/soilService';
 import { SOIL_TEXTURES } from '../../utils/constants';
+import { SoilSample } from '../../types';
 
 interface Props {
   fieldId: number;
-  onSaved?: () => void;
+  onSaved?: (createdSample: SoilSample) => void;
 }
 
 const SoilSampleForm: React.FC<Props> = ({ fieldId, onSaved }) => {
@@ -40,7 +41,7 @@ const SoilSampleForm: React.FC<Props> = ({ fieldId, onSaved }) => {
     setSubmitting(true);
     setStatus(null);
     try {
-      await createSoilSample(fieldId, {
+      const res = await createSoilSample(fieldId, {
         latitude: 23.0775,
         longitude: 76.8513,
         nitrogen_level: formData.nitrogen_level,
@@ -57,8 +58,8 @@ const SoilSampleForm: React.FC<Props> = ({ fieldId, onSaved }) => {
         is_validated: formData.is_validated,
         notes: formData.notes,
       });
-      setStatus('Soil sample saved! Recommendations will now use this ground-truth data.');
-      if (onSaved) onSaved();
+      setStatus('Soil sample saved! View the full analysis result on the right.');
+      if (onSaved) onSaved(res.data);
     } catch (err) {
       console.error('Failed to save soil sample:', err);
       setStatus('Error saving soil sample.');
@@ -69,10 +70,14 @@ const SoilSampleForm: React.FC<Props> = ({ fieldId, onSaved }) => {
 
   return (
     <form onSubmit={handleSubmit} className="card">
-      <h3>⚡ Ground Truth Soil Entry</h3>
+      <h3>🧪 Submit Soil Sample</h3>
+      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+        Enter lab, IoT sensor, or field kit values to compute soil health results.
+      </p>
+
       {status && (
         <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(34,197,94,0.15)', border: '1px solid #22c55e' }}>
-          {status}
+          ✅ {status}
         </div>
       )}
 
@@ -122,11 +127,22 @@ const SoilSampleForm: React.FC<Props> = ({ fieldId, onSaved }) => {
           </label>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
           <label>
             pH Value
             <input type="number" step="0.1" value={formData.ph_value} onChange={(e) => setFormData({ ...formData, ph_value: parseFloat(e.target.value) })} style={inputStyle} />
           </label>
+          <label>
+            Soil Moisture
+            <select value={formData.moisture_level} onChange={(e) => setFormData({ ...formData, moisture_level: e.target.value })} style={inputStyle}>
+              <option value="low">Low (Dry)</option>
+              <option value="medium">Medium (Optimal)</option>
+              <option value="high">High (Wet)</option>
+            </select>
+          </label>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
           <label>
             Soil Texture
             <select value={formData.soil_texture} onChange={(e) => setFormData({ ...formData, soil_texture: e.target.value })} style={inputStyle}>
@@ -154,7 +170,7 @@ const SoilSampleForm: React.FC<Props> = ({ fieldId, onSaved }) => {
         </label>
 
         <button type="submit" className="btn btn-primary" disabled={submitting}>
-          {submitting ? 'Saving...' : '💾 Save Soil Data'}
+          {submitting ? 'Analyzing & Saving...' : '💾 Submit Soil Sample & Get Result'}
         </button>
       </div>
     </form>

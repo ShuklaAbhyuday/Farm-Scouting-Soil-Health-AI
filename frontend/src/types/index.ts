@@ -99,6 +99,53 @@ export interface Hotspot {
   created_at: string;
 }
 
+export interface CropRecommendationItem {
+  crop: string;
+  emoji: string;
+  season: string;
+  suitability_score: number;
+  match_label: string;
+  nitrogen_fixer: boolean;
+  reasons: string[];
+  care_notes: string;
+}
+
+export interface CropRecommendationResponse {
+  field_id: number;
+  field_name: string;
+  current_crop?: string;
+  source_mode: 'validated_soil_sample' | 'unvalidated_soil_sample' | 'manual_or_satellite_estimate';
+  has_soil_sample: boolean;
+  is_validated: boolean;
+  inputs_used: {
+    nitrogen_value?: number | null;
+    nitrogen_level?: string;
+    phosphorus_value?: number | null;
+    phosphorus_level?: string;
+    potassium_value?: number | null;
+    potassium_level?: string;
+    ph_value: number;
+    moisture_level: string;
+    soil_texture: string;
+    season: string;
+    ndmi_mean?: number | null;
+  };
+  recommendations: CropRecommendationItem[];
+}
+
+export interface SoilSampleAnalysis {
+  fertility_score: number;
+  verdict: string;
+  ph_status: string;
+  nutrient_status: {
+    nitrogen: { level: string; value: number; is_measured: boolean };
+    phosphorus: { level: string; value: number; is_measured: boolean };
+    potassium: { level: string; value: number; is_measured: boolean };
+  };
+  actions: string[];
+  top_crops: CropRecommendationItem[];
+}
+
 export interface SoilSample {
   id: number;
   field_id: number;
@@ -120,6 +167,7 @@ export interface SoilSample {
   is_validated: boolean;
   notes?: string;
   created_at: string;
+  analysis?: SoilSampleAnalysis;
 }
 
 export interface SoilSampleCreate {

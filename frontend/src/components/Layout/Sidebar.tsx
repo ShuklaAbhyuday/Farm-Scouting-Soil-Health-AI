@@ -58,10 +58,13 @@ const Sidebar: React.FC = () => {
           🔥 Hotspots
         </NavLink>
         <NavLink to="/soil" className={({ isActive }) => (isActive ? 'active' : '')}>
-          🧪 Soil Data
+          🧪 Soil Samples &amp; Results
+        </NavLink>
+        <NavLink to="/crop-recommendation" className={({ isActive }) => (isActive ? 'active' : '')}>
+          🌱 Crop Recommendation
         </NavLink>
         <NavLink to="/recommendations" className={({ isActive }) => (isActive ? 'active' : '')}>
-          💡 Recommendations
+          💡 Fertilizer Advice
         </NavLink>
         <NavLink to="/history" className={({ isActive }) => (isActive ? 'active' : '')}>
           📈 History

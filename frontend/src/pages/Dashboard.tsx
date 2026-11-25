@@ -146,7 +146,10 @@ const Dashboard: React.FC = () => {
               {analyzing ? '⏳ Analyzing Field...' : '🛰️ Analyze Field'}
             </button>
             <button className="btn btn-primary" onClick={() => navigate('/soil')}>
-              🧪 Enter Soil Data
+              🧪 Submit Soil Sample &amp; Results
+            </button>
+            <button className="btn btn-primary" onClick={() => navigate('/crop-recommendation')}>
+              🌱 Crop Recommendation
             </button>
             <button className="btn btn-primary" onClick={() => navigate('/history')}>
               📈 View History
