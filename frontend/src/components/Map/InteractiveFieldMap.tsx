@@ -28,6 +28,8 @@ interface InteractiveFieldMapProps {
   drawingMode?: boolean;
   onToggleDrawing?: (active: boolean) => void;
   onPolygonComplete?: (geojson: GeoJSON.Polygon, areaHa: number) => void;
+  onDraftChange?: (pointCount: number, geojson: GeoJSON.Polygon | null, areaHa: number) => void;
+  clearDraftSignal?: number;
   height?: string;
 }
 
@@ -71,10 +73,12 @@ export function pointsToGeoJSON(points: LatLngPoint[]): GeoJSON.Polygon {
 const MapController: React.FC<{
   boundary: any;
   flyTarget: { center: [number, number]; zoom: number } | null;
-}> = ({ boundary, flyTarget }) => {
+  skipFit: boolean;
+}> = ({ boundary, flyTarget, skipFit }) => {
   const map = useMap();
 
   useEffect(() => {
+    if (skipFit) return;
     const geom = parseGeoJSON(boundary);
     if (geom?.type === 'Polygon' && geom.coordinates?.[0]?.length > 2) {
       const latlngs = geom.coordinates[0].map((c: number[]) => [c[1], c[0]] as [number, number]);
@@ -83,7 +87,7 @@ const MapController: React.FC<{
         map.fitBounds(bounds, { padding: [45, 45], maxZoom: 16 });
       }
     }
-  }, [boundary, map]);
+  }, [boundary, map, skipFit]);
 
   useEffect(() => {
     if (flyTarget) {
@@ -115,6 +119,8 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
   drawingMode = false,
   onToggleDrawing,
   onPolygonComplete,
+  onDraftChange,
+  clearDraftSignal = 0,
   height = '540px',
 }) => {
   const [draftPoints, setDraftPoints] = useState<LatLngPoint[]>([]);
@@ -126,6 +132,21 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
   const parsedBoundary = useMemo(() => parseGeoJSON(boundary), [boundary]);
 
   const draftAreaHa = useMemo(() => computePolygonAreaHa(draftPoints), [draftPoints]);
+
+  useEffect(() => {
+    if (clearDraftSignal > 0) {
+      setDraftPoints([]);
+    }
+  }, [clearDraftSignal]);
+
+  useEffect(() => {
+    if (!onDraftChange) return;
+    if (draftPoints.length >= 3) {
+      onDraftChange(draftPoints.length, pointsToGeoJSON(draftPoints), draftAreaHa);
+    } else {
+      onDraftChange(draftPoints.length, null, 0);
+    }
+  }, [draftPoints, draftAreaHa, onDraftChange]);
 
   const handleFinishPolygon = (pts = draftPoints) => {
     if (pts.length < 3 || !onPolygonComplete) return;
@@ -303,7 +324,7 @@ const InteractiveFieldMap: React.FC<InteractiveFieldMapProps> = ({
           </LayersControl.BaseLayer>
         </LayersControl>
 
-        <MapController boundary={parsedBoundary} flyTarget={flyTarget} />
+        <MapController boundary={parsedBoundary} flyTarget={flyTarget} skipFit={drawingMode && draftPoints.length > 0} />
         <DrawClickCapture
           active={drawingMode}
           onAddPoint={(pt) => setDraftPoints((prev) => [...prev, pt])}

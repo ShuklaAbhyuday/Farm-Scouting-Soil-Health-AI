@@ -58,37 +58,75 @@ class GEEService:
         return image.addBands([ndvi, ndmi, ndre])
     
     def analyze_field(self, boundary_geojson, start_date, end_date, cloud_max=20):
-        """Full pipeline: query → mask → indices → statistics."""
+        """Full pipeline: query → mask → indices → single-batch statistics."""
         import geojson
         geom = geojson.loads(boundary_geojson)
         ee_geom = ee.Geometry(geom)
-        
+
         col = self.get_sentinel2_collection(ee_geom, start_date, end_date, cloud_max)
-        if col.size().getInfo() == 0:
-            return None
-        
         raw_image = col.sort('system:time_start', False).first()
-        time_start = raw_image.get('system:time_start').getInfo()
-        cloud_pct = raw_image.get('CLOUDY_PIXEL_PERCENTAGE').getInfo()
+        if raw_image is None:
+            return None
 
-        image = self.calculate_indices(self.mask_clouds(raw_image))
-        ndvi_stats = self.get_index_stats(image, ee_geom, 'NDVI')
+        try:
+            meta = raw_image.toDictionary(['system:time_start', 'CLOUDY_PIXEL_PERCENTAGE']).getInfo()
+        except Exception:
+            return None
+        if not meta:
+            return None
 
-        # If the single latest scene had clouds over the exact polygon, fall back to a cloud-masked median composite
-        if not ndvi_stats or ndvi_stats.get('NDVI_mean') is None:
+        time_start = meta.get('system:time_start')
+        cloud_pct = meta.get('CLOUDY_PIXEL_PERCENTAGE')
+
+        image = self.calculate_indices(self.mask_clouds(raw_image)).select(['NDVI', 'NDMI', 'NDRE'])
+        reducer = (
+            ee.Reducer.mean()
+            .combine(ee.Reducer.minMax(), sharedInputs=True)
+            .combine(ee.Reducer.stdDev(), sharedInputs=True)
+        )
+        stats = image.reduceRegion(
+            reducer=reducer,
+            geometry=ee_geom,
+            scale=20,
+            maxPixels=1e9,
+            bestEffort=True,
+        ).getInfo()
+
+        if not stats or stats.get('NDVI_mean') is None:
             composite = col.map(self.mask_clouds).median()
-            image = self.calculate_indices(composite)
-            ndvi_stats = self.get_index_stats(image, ee_geom, 'NDVI')
+            image = self.calculate_indices(composite).select(['NDVI', 'NDMI', 'NDRE'])
+            stats = image.reduceRegion(
+                reducer=reducer,
+                geometry=ee_geom,
+                scale=20,
+                maxPixels=1e9,
+                bestEffort=True,
+            ).getInfo()
 
-        if not ndvi_stats or ndvi_stats.get('NDVI_mean') is None:
+        if not stats or stats.get('NDVI_mean') is None:
             return None
 
         return {
-            'ndvi_stats': ndvi_stats,
-            'ndmi_stats': self.get_index_stats(image, ee_geom, 'NDMI'),
-            'ndre_stats': self.get_index_stats(image, ee_geom, 'NDRE'),
+            'ndvi_stats': {
+                'NDVI_mean': stats.get('NDVI_mean', 0.0),
+                'NDVI_min': stats.get('NDVI_min', 0.0),
+                'NDVI_max': stats.get('NDVI_max', 0.0),
+                'NDVI_stdDev': stats.get('NDVI_stdDev', 0.0),
+            },
+            'ndmi_stats': {
+                'NDMI_mean': stats.get('NDMI_mean', 0.0),
+                'NDMI_min': stats.get('NDMI_min', 0.0),
+                'NDMI_max': stats.get('NDMI_max', 0.0),
+                'NDMI_stdDev': stats.get('NDMI_stdDev', 0.0),
+            },
+            'ndre_stats': {
+                'NDRE_mean': stats.get('NDRE_mean', 0.0),
+                'NDRE_min': stats.get('NDRE_min', 0.0),
+                'NDRE_max': stats.get('NDRE_max', 0.0),
+                'NDRE_stdDev': stats.get('NDRE_stdDev', 0.0),
+            },
             'cloud_cover': cloud_pct if cloud_pct is not None else 0.0,
-            'acquisition_date': datetime.fromtimestamp(time_start / 1000.0) if time_start else datetime.utcnow()
+            'acquisition_date': datetime.fromtimestamp(time_start / 1000.0) if time_start else datetime.utcnow(),
         }
     
     def get_tile_url(self, image, vis_params):

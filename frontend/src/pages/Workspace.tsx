@@ -56,9 +56,13 @@ const Workspace: React.FC = () => {
   const [drawingMode, setDrawingMode] = useState<boolean>(true);
   const [drawnPolygon, setDrawnPolygon] = useState<GeoJSON.Polygon | null>(null);
   const [drawnAreaHa, setDrawnAreaHa] = useState<number>(0);
+  const [draftPointCount, setDraftPointCount] = useState<number>(0);
+  const [draftPolygon, setDraftPolygon] = useState<GeoJSON.Polygon | null>(null);
+  const [draftAreaHa, setDraftAreaHa] = useState<number>(0);
+  const [clearDraftSignal, setClearDraftSignal] = useState<number>(0);
   const [fieldName, setFieldName] = useState<string>('My Field Plot');
   const [cropType, setCropType] = useState<string>('Wheat');
-  const [startDate, setStartDate] = useState<string>('2023-01-01');
+  const [startDate] = useState<string>('2023-01-01');
   const [endDate, setEndDate] = useState<string>('2024-12-31');
 
   // Stage 2: Satellite Data State
@@ -68,6 +72,7 @@ const Workspace: React.FC = () => {
   const [selectedHotspot, setSelectedHotspot] = useState<Hotspot | null>(null);
   const [historyObs, setHistoryObs] = useState<any[]>([]);
   const [scanning, setScanning] = useState<boolean>(false);
+  const [scanProgress, setScanProgress] = useState<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
 
   // Stage 3: Soil Samples + Soil Result + Crop Recommendation State
@@ -134,9 +139,17 @@ const Workspace: React.FC = () => {
   }, [selectedFieldId, loadFieldData]);
 
   // Handlers
+  const handleDraftChange = useCallback((count: number, geojson: GeoJSON.Polygon | null, areaHa: number) => {
+    setDraftPointCount(count);
+    setDraftPolygon(geojson);
+    setDraftAreaHa(areaHa);
+  }, []);
+
   const handlePolygonComplete = (geojson: GeoJSON.Polygon, areaHa: number) => {
     setDrawnPolygon(geojson);
     setDrawnAreaHa(areaHa);
+    setDraftPointCount(0);
+    setDraftPolygon(null);
     setActiveBoundary(geojson);
     setHotspots([]);
     setScanError(null);
@@ -147,6 +160,9 @@ const Workspace: React.FC = () => {
     const area = computePolygonAreaHa(pts);
     setDrawnPolygon(DEMO_SAMPLE_POLYGON);
     setDrawnAreaHa(area);
+    setDraftPointCount(0);
+    setDraftPolygon(null);
+    setClearDraftSignal((n) => n + 1);
     setActiveBoundary(DEMO_SAMPLE_POLYGON);
     setDrawingMode(false);
     setHotspots([]);
@@ -156,6 +172,9 @@ const Workspace: React.FC = () => {
   const handleStartNewField = () => {
     setDrawnPolygon(null);
     setDrawnAreaHa(0);
+    setDraftPointCount(0);
+    setDraftPolygon(null);
+    setClearDraftSignal((n) => n + 1);
     setActiveBoundary(null);
     setHotspots([]);
     setFieldName(`Field ${allFields.length + 1}`);
@@ -164,24 +183,62 @@ const Workspace: React.FC = () => {
     setStage(1);
   };
 
+  const pendingNewPolygon = drawnPolygon || draftPolygon;
+  const pendingAreaHa = drawnPolygon ? drawnAreaHa : draftAreaHa;
+
+  const handleSaveOnly = async () => {
+    if (!pendingNewPolygon) return;
+    setScanning(true);
+    setScanError(null);
+    setScanProgress('Saving field boundary...');
+    try {
+      const created = await createField(selectedFarmId || 1, {
+        name: fieldName.trim() || `Field ${allFields.length + 1}`,
+        boundary_geojson: pendingNewPolygon,
+        crop_type: cropType,
+        growth_stage: 'Vegetative',
+      });
+      const targetFieldId = created.data.id;
+      setDrawnPolygon(null);
+      setDraftPolygon(null);
+      setDraftPointCount(0);
+      setClearDraftSignal((n) => n + 1);
+      setDrawingMode(false);
+      await refreshFarms(targetFieldId);
+      await loadFieldData(targetFieldId);
+      setScanProgress(`Saved "${created.data.name}" (${created.data.area_ha} ha)!`);
+    } catch (err: any) {
+      setScanError(err?.response?.data?.detail || 'Failed to save field boundary.');
+      setScanProgress(null);
+    } finally {
+      setScanning(false);
+    }
+  };
+
   const handleRunSatellitePipeline = async () => {
     setScanning(true);
     setScanError(null);
     try {
       let targetFieldId = selectedFieldId;
 
-      if (drawnPolygon) {
+      if (pendingNewPolygon) {
+        setScanProgress('1/2 Saving your drawn field boundary...');
         const created = await createField(selectedFarmId || 1, {
           name: fieldName.trim() || `Field ${allFields.length + 1}`,
-          boundary_geojson: drawnPolygon,
+          boundary_geojson: pendingNewPolygon,
           crop_type: cropType,
           growth_stage: 'Vegetative',
         });
         targetFieldId = created.data.id;
         setDrawnPolygon(null);
+        setDraftPolygon(null);
+        setDraftPointCount(0);
+        setClearDraftSignal((n) => n + 1);
+        setDrawingMode(false);
         await refreshFarms(targetFieldId);
       }
 
+      setScanProgress('2/2 Fetching Sentinel-2 imagery & running Isolation Forest ML scan...');
       await analyzeField(targetFieldId, {
         start_date: startDate,
         end_date: endDate,
@@ -189,10 +246,12 @@ const Workspace: React.FC = () => {
 
       await loadFieldData(targetFieldId);
       setDrawingMode(false);
+      setScanProgress(null);
       setStage(2);
     } catch (err: any) {
       console.error('Satellite pipeline failed:', err);
       const detail = err?.response?.data?.detail;
+      setScanProgress(null);
       setScanError(
         detail
           ? `Satellite scan error: ${detail}`
@@ -411,6 +470,8 @@ const Workspace: React.FC = () => {
               drawingMode={drawingMode}
               onToggleDrawing={setDrawingMode}
               onPolygonComplete={handlePolygonComplete}
+              onDraftChange={handleDraftChange}
+              clearDraftSignal={clearDraftSignal}
               height="calc(100vh - 115px)"
             />
 
@@ -419,23 +480,28 @@ const Workspace: React.FC = () => {
                 <span className="badge badge-neutral">STEP 1 OF 3 · FIELD BOUNDARY</span>
                 <h2 style={{ marginTop: '0.5rem', fontSize: '1.3rem' }}>Outline your field on the map</h2>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', marginTop: '0.25rem' }}>
-                  Search your area on the map, click at least 3 corners around your plot, and press <strong>Finish Field</strong> (or click the first green point).
+                  Search your location on the map, click at least 3 corners around your plot, and click <strong>Save &amp; Analyze</strong> below (no extra click needed).
                 </p>
               </div>
 
-              <div className={drawnPolygon ? 'banner-info' : 'banner-warn'}>
-                {drawnPolygon ? (
+              <div className={pendingNewPolygon ? 'banner-info' : 'banner-warn'}>
+                {pendingNewPolygon ? (
                   <>
-                    <strong>Boundary ready:</strong> New drawn polygon (<span className="mono">~{drawnAreaHa} ha</span>)
+                    <strong>Drawn boundary ready:</strong> {drawnPolygon ? 'Completed polygon' : `${draftPointCount} corners placed`} (<span className="mono">~{pendingAreaHa} ha</span>) — click below to save &amp; scan!
+                  </>
+                ) : drawingMode ? (
+                  <>
+                    <strong>Drawing mode active:</strong>{' '}
+                    {draftPointCount === 0
+                      ? 'Click corners directly on the satellite map to trace your field.'
+                      : `${draftPointCount} corner(s) placed — click ${3 - draftPointCount} more corner(s) to form a polygon.`}
                   </>
                 ) : activeBoundary ? (
                   <>
-                    <strong>Loaded saved boundary:</strong> {dashboard?.field_name || 'Selected field'} — click <strong>Start Drawing</strong> on the map to trace a new boundary, or run satellite analysis on this plot.
+                    <strong>Loaded saved field:</strong> {dashboard?.field_name || 'Selected field'} — click <strong>Draw Custom Polygon</strong> to trace a new field, or analyze this saved plot.
                   </>
                 ) : (
-                  <>
-                    <strong>Drawing mode active:</strong> Click corners directly on the satellite map to trace your field.
-                  </>
+                  <>Click <strong>Draw Custom Polygon</strong> to trace your field boundary.</>
                 )}
               </div>
 
@@ -445,6 +511,9 @@ const Workspace: React.FC = () => {
                   className="btn btn-sm"
                   onClick={() => {
                     setDrawnPolygon(null);
+                    setDraftPolygon(null);
+                    setDraftPointCount(0);
+                    setClearDraftSignal((n) => n + 1);
                     setDrawingMode(true);
                   }}
                 >
@@ -488,21 +557,34 @@ const Workspace: React.FC = () => {
                 </div>
               </div>
 
+              {scanProgress && <div className="banner-info">{scanProgress}</div>}
               {scanError && <div className="banner-err">{scanError}</div>}
 
-              <button
-                type="button"
-                className="btn btn-primary"
-                style={{ padding: '0.75rem 1rem', fontSize: '0.95rem' }}
-                disabled={scanning || (!drawnPolygon && !activeBoundary)}
-                onClick={handleRunSatellitePipeline}
-              >
-                {scanning
-                  ? 'Running Sentinel-2 & ML Scan...'
-                  : drawnPolygon
-                    ? 'Save Field & Analyze Satellite Imagery →'
-                    : 'Analyze This Field from Satellite →'}
-              </button>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                {pendingNewPolygon && (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={scanning}
+                    onClick={handleSaveOnly}
+                  >
+                    Save Only
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ flex: 1, padding: '0.75rem 1rem', fontSize: '0.95rem' }}
+                  disabled={scanning || (!pendingNewPolygon && !activeBoundary)}
+                  onClick={handleRunSatellitePipeline}
+                >
+                  {scanning
+                    ? 'Scanning Satellite Imagery...'
+                    : pendingNewPolygon
+                      ? 'Save Drawn Field & Analyze Satellite →'
+                      : 'Analyze Saved Field from Satellite →'}
+                </button>
+              </div>
             </div>
           </div>
         )}
