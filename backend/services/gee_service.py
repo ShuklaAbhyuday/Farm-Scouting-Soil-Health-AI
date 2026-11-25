@@ -71,11 +71,20 @@ class GEEService:
         time_start = raw_image.get('system:time_start').getInfo()
         cloud_pct = raw_image.get('CLOUDY_PIXEL_PERCENTAGE').getInfo()
 
-        image = self.mask_clouds(raw_image)
-        image = self.calculate_indices(image)
-        
+        image = self.calculate_indices(self.mask_clouds(raw_image))
+        ndvi_stats = self.get_index_stats(image, ee_geom, 'NDVI')
+
+        # If the single latest scene had clouds over the exact polygon, fall back to a cloud-masked median composite
+        if not ndvi_stats or ndvi_stats.get('NDVI_mean') is None:
+            composite = col.map(self.mask_clouds).median()
+            image = self.calculate_indices(composite)
+            ndvi_stats = self.get_index_stats(image, ee_geom, 'NDVI')
+
+        if not ndvi_stats or ndvi_stats.get('NDVI_mean') is None:
+            return None
+
         return {
-            'ndvi_stats': self.get_index_stats(image, ee_geom, 'NDVI'),
+            'ndvi_stats': ndvi_stats,
             'ndmi_stats': self.get_index_stats(image, ee_geom, 'NDMI'),
             'ndre_stats': self.get_index_stats(image, ee_geom, 'NDRE'),
             'cloud_cover': cloud_pct if cloud_pct is not None else 0.0,
