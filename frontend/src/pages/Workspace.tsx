@@ -663,22 +663,71 @@ const Workspace: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Spectral Indices */}
-                <div className="metric-grid-3">
-                  <div className="metric-tile">
-                    <div className="metric-tile-label">NDVI</div>
-                    <div className="metric-tile-value">{dashboard?.ndvi_mean ?? '—'}</div>
-                    <div className="metric-tile-sub">Vegetation vigor</div>
+                {/* Spectral Optical Indices (Sentinel-2) */}
+                <div>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+                    SENTINEL-2 OPTICAL PROXIES (10m–20m)
                   </div>
-                  <div className="metric-tile">
-                    <div className="metric-tile-label">NDMI</div>
-                    <div className="metric-tile-value">{dashboard?.ndmi_mean ?? '—'}</div>
-                    <div className="metric-tile-sub">Canopy moisture</div>
+                  <div className="metric-grid-3">
+                    <div className="metric-tile">
+                      <div className="metric-tile-label">NDVI</div>
+                      <div className="metric-tile-value">{dashboard?.ndvi_mean ?? '—'}</div>
+                      <div className="metric-tile-sub">Vegetation vigor</div>
+                    </div>
+                    <div className="metric-tile">
+                      <div className="metric-tile-label">EVI</div>
+                      <div className="metric-tile-value">{dashboard?.evi_mean ?? '—'}</div>
+                      <div className="metric-tile-sub">Dense canopy</div>
+                    </div>
+                    <div className="metric-tile">
+                      <div className="metric-tile-label">SAVI</div>
+                      <div className="metric-tile-value">{dashboard?.savi_mean ?? '—'}</div>
+                      <div className="metric-tile-sub">Soil-adjusted</div>
+                    </div>
+                    <div className="metric-tile">
+                      <div className="metric-tile-label">GNDVI</div>
+                      <div className="metric-tile-value">{dashboard?.gndvi_mean ?? '—'}</div>
+                      <div className="metric-tile-sub">Green density</div>
+                    </div>
+                    <div className="metric-tile">
+                      <div className="metric-tile-label">NDMI</div>
+                      <div className="metric-tile-value">{dashboard?.ndmi_mean ?? '—'}</div>
+                      <div className="metric-tile-sub">Leaf moisture</div>
+                    </div>
+                    <div className="metric-tile">
+                      <div className="metric-tile-label">NDRE</div>
+                      <div className="metric-tile-value">{dashboard?.ndre_mean ?? '—'}</div>
+                      <div className="metric-tile-sub">Chlorophyll proxy</div>
+                    </div>
                   </div>
-                  <div className="metric-tile">
-                    <div className="metric-tile-label">NDRE</div>
-                    <div className="metric-tile-value">{dashboard?.ndre_mean ?? '—'}</div>
-                    <div className="metric-tile-sub">Chlorophyll proxy</div>
+                </div>
+
+                {/* Sentinel-1 SAR Radar (Cloud-Independent Moisture & Structure) */}
+                <div style={{ padding: '0.75rem', borderRadius: '8px', background: 'var(--bg-page)', border: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      SENTINEL-1 SAR RADAR (CLOUD-PROOF)
+                    </span>
+                    <span className="badge badge-neutral">
+                      {dashboard?.surface_wetness_status || 'Radar Moisture Proxy'}
+                    </span>
+                  </div>
+                  <div className="metric-grid-3">
+                    <div className="metric-tile" style={{ background: 'var(--bg-surface)' }}>
+                      <div className="metric-tile-label">S1 VV (dB)</div>
+                      <div className="metric-tile-value">{dashboard?.s1_vv ?? '—'}</div>
+                      <div className="metric-tile-sub">Surface wetness</div>
+                    </div>
+                    <div className="metric-tile" style={{ background: 'var(--bg-surface)' }}>
+                      <div className="metric-tile-label">S1 VH (dB)</div>
+                      <div className="metric-tile-value">{dashboard?.s1_vh ?? '—'}</div>
+                      <div className="metric-tile-sub">Canopy structure</div>
+                    </div>
+                    <div className="metric-tile" style={{ background: 'var(--bg-surface)' }}>
+                      <div className="metric-tile-label">Radar RVI</div>
+                      <div className="metric-tile-value">{dashboard?.s1_rvi ?? '—'}</div>
+                      <div className="metric-tile-sub">0–1 biomass index</div>
+                    </div>
                   </div>
                 </div>
 
@@ -740,8 +789,23 @@ const Workspace: React.FC = () => {
               </div>
 
               {historyObs.length > 0 && (
-                <div className="card">
-                  <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>Spectral Index History ({historyObs.length} scan{historyObs.length > 1 ? 's' : ''})</h4>
+                <div className="card" style={{ display: 'grid', gap: '0.65rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div>
+                      <h4 style={{ fontSize: '0.92rem' }}>
+                        Crop Growth &amp; Phenology ({historyObs.length} dates)
+                      </h4>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                        {dashboard?.phenology?.land_status || 'Seasonal curve'}
+                        {dashboard?.phenology?.peak_ndvi != null && (
+                          <> · Peak NDVI <span className="mono">{dashboard.phenology.peak_ndvi}</span> ({dashboard.phenology.peak_date})</>
+                        )}
+                      </div>
+                    </div>
+                    {dashboard?.phenology?.stage && (
+                      <span className="badge badge-healthy">{dashboard.phenology.stage}</span>
+                    )}
+                  </div>
                   <TimeSeriesChart data={historyObs} />
                 </div>
               )}

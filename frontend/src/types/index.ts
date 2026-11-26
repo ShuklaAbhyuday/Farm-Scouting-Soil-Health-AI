@@ -217,8 +217,24 @@ export interface DashboardSummary {
   total_hotspots: number;
   critical_hotspots: number;
   ndvi_mean?: number;
+  evi_mean?: number;
+  savi_mean?: number;
+  gndvi_mean?: number;
   ndmi_mean?: number;
   ndre_mean?: number;
+  s1_vv?: number;
+  s1_vh?: number;
+  s1_rvi?: number;
+  surface_wetness_status?: string;
+  phenology?: {
+    stage: string;
+    land_status: string;
+    peak_ndvi?: number | null;
+    peak_date?: string | null;
+    latest_date?: string | null;
+    observation_count: number;
+    ndvi_change?: number | null;
+  };
   ndvi_trend?: 'improving' | 'stable' | 'declining';
   recent_recommendations: Recommendation[];
   highest_priority_hotspot?: Hotspot;

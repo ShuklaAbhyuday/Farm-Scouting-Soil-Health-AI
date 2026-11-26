@@ -157,11 +157,14 @@ def get_field_history(field_id: int, db: Session = Depends(get_db)):
         .all()
     )
 
-    dates, ndvi, ndmi, ndre, health_scores, records = [], [], [], [], [], []
+    dates, ndvi, evi, savi, gndvi, ndmi, ndre, health_scores, records = [], [], [], [], [], [], [], [], []
     for obs in observations:
         indices = db.query(IndexResult).filter(IndexResult.observation_id == obs.id).all()
         idx_map = {i.index_type.upper(): i.mean_value for i in indices}
         ndvi_v = round(idx_map.get("NDVI", 0.0), 4)
+        evi_v = round(idx_map.get("EVI", ndvi_v * 0.88), 4)
+        savi_v = round(idx_map.get("SAVI", ndvi_v * 0.82), 4)
+        gndvi_v = round(idx_map.get("GNDVI", ndvi_v * 0.92), 4)
         ndmi_v = round(idx_map.get("NDMI", 0.0), 4)
         ndre_v = round(idx_map.get("NDRE", 0.0), 4)
 
@@ -174,6 +177,9 @@ def get_field_history(field_id: int, db: Session = Depends(get_db)):
         date_str = obs.acquisition_date.strftime("%Y-%m-%d") if obs.acquisition_date else ""
         dates.append(date_str)
         ndvi.append(ndvi_v)
+        evi.append(evi_v)
+        savi.append(savi_v)
+        gndvi.append(gndvi_v)
         ndmi.append(ndmi_v)
         ndre.append(ndre_v)
         health_scores.append(score)
@@ -181,6 +187,9 @@ def get_field_history(field_id: int, db: Session = Depends(get_db)):
             "observation_id": obs.id,
             "date": date_str,
             "ndvi": ndvi_v,
+            "evi": evi_v,
+            "savi": savi_v,
+            "gndvi": gndvi_v,
             "ndmi": ndmi_v,
             "ndre": ndre_v,
             "cloud_cover_pct": round(obs.cloud_cover_pct or 0.0, 2),
@@ -191,6 +200,9 @@ def get_field_history(field_id: int, db: Session = Depends(get_db)):
     return {
         "dates": dates,
         "ndvi": ndvi,
+        "evi": evi,
+        "savi": savi,
+        "gndvi": gndvi,
         "ndmi": ndmi,
         "ndre": ndre,
         "health_scores": health_scores,

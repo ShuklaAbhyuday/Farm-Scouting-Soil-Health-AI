@@ -192,6 +192,48 @@ def _detect_and_store_hotspots(
     return created
 
 
+def _store_time_series(field_id: int, time_series: list[dict], latest_obs_date: datetime, db: Session):
+    """Persist historical Sentinel-2 time-series points without duplicating existing dates."""
+    if not time_series:
+        return
+    existing = db.query(SatelliteObservation).filter(SatelliteObservation.field_id == field_id).all()
+    existing_days = {
+        o.acquisition_date.strftime("%Y-%m-%d")
+        for o in existing
+        if o.acquisition_date
+    }
+    latest_day = latest_obs_date.strftime("%Y-%m-%d") if latest_obs_date else None
+
+    for pt in time_series:
+        dt = pt["acquisition_date"]
+        day = dt.strftime("%Y-%m-%d")
+        if day == latest_day or day in existing_days:
+            continue
+        existing_days.add(day)
+        hist_obs = SatelliteObservation(
+            field_id=field_id,
+            acquisition_date=dt,
+            cloud_cover_pct=pt.get("cloud_cover", 0.0),
+            status="processed",
+            processed_at=datetime.utcnow(),
+        )
+        db.add(hist_obs)
+        db.flush()
+        for idx_name in ["NDVI", "EVI", "SAVI", "GNDVI", "NDMI", "NDRE"]:
+            val = float(pt.get(idx_name, 0.0))
+            db.add(
+                IndexResult(
+                    observation_id=hist_obs.id,
+                    index_type=idx_name,
+                    mean_value=val,
+                    min_value=val,
+                    max_value=val,
+                    std_value=0.0,
+                )
+            )
+    db.commit()
+
+
 @router.post("/fields/{field_id}/analyze")
 def analyze_field(
     field_id: int,
@@ -219,42 +261,91 @@ def analyze_field(
     if not results:
         raise HTTPException(status_code=404, detail="No valid satellite data found in date range")
 
-    obs = SatelliteObservation(
-        field_id=field_id,
-        acquisition_date=results["acquisition_date"],
-        cloud_cover_pct=results["cloud_cover"],
-        status="processed",
-        processed_at=datetime.utcnow(),
+    acq_date = results["acquisition_date"]
+
+    # Upsert if the exact same acquisition day already exists so repeated clicks stay clean
+    day_prefix = acq_date.strftime("%Y-%m-%d")
+    obs = (
+        db.query(SatelliteObservation)
+        .filter(SatelliteObservation.field_id == field_id)
+        .order_by(SatelliteObservation.id.desc())
+        .all()
     )
-    db.add(obs)
-    db.commit()
-    db.refresh(obs)
+    existing_same_day = next(
+        (o for o in obs if o.acquisition_date and o.acquisition_date.strftime("%Y-%m-%d") == day_prefix),
+        None,
+    )
 
-    for idx_name, stats in zip(
-        ["NDVI", "NDMI", "NDRE"],
-        [results["ndvi_stats"], results["ndmi_stats"], results["ndre_stats"]],
-    ):
-        idx_res = IndexResult(
-            observation_id=obs.id,
-            index_type=idx_name,
-            mean_value=stats[f"{idx_name}_mean"],
-            min_value=stats[f"{idx_name}_min"],
-            max_value=stats[f"{idx_name}_max"],
-            std_value=stats[f"{idx_name}_stdDev"],
+    if existing_same_day:
+        db.query(IndexResult).filter(IndexResult.observation_id == existing_same_day.id).delete()
+        existing_same_day.cloud_cover_pct = results["cloud_cover"]
+        existing_same_day.processed_at = datetime.utcnow()
+        obs_record = existing_same_day
+        db.commit()
+    else:
+        obs_record = SatelliteObservation(
+            field_id=field_id,
+            acquisition_date=acq_date,
+            cloud_cover_pct=results["cloud_cover"],
+            status="processed",
+            processed_at=datetime.utcnow(),
         )
-        db.add(idx_res)
+        db.add(obs_record)
+        db.commit()
+        db.refresh(obs_record)
+
+    optical_pairs = [
+        ("NDVI", results["ndvi_stats"]),
+        ("EVI", results["evi_stats"]),
+        ("SAVI", results["savi_stats"]),
+        ("GNDVI", results["gndvi_stats"]),
+        ("NDMI", results["ndmi_stats"]),
+        ("NDRE", results["ndre_stats"]),
+    ]
+    for idx_name, stats in optical_pairs:
+        db.add(
+            IndexResult(
+                observation_id=obs_record.id,
+                index_type=idx_name,
+                mean_value=stats[f"{idx_name}_mean"],
+                min_value=stats[f"{idx_name}_min"],
+                max_value=stats[f"{idx_name}_max"],
+                std_value=stats[f"{idx_name}_stdDev"],
+            )
+        )
+
+    s1_stats = results.get("s1_stats")
+    if s1_stats:
+        for s1_key in ["S1_VV", "S1_VH", "S1_RVI"]:
+            val = float(s1_stats.get(s1_key, 0.0))
+            db.add(
+                IndexResult(
+                    observation_id=obs_record.id,
+                    index_type=s1_key,
+                    mean_value=val,
+                    min_value=val,
+                    max_value=val,
+                    std_value=0.0,
+                )
+            )
     db.commit()
 
-    zones = _detect_and_store_hotspots(field, obs, results, cells, db)
+    # Save historical Sentinel-2 time series for phenology/growth curve
+    _store_time_series(field_id, results.get("time_series", []), acq_date, db)
+
+    zones = _detect_and_store_hotspots(field, obs_record, results, cells, db)
     recs = generate_and_store_recommendations(field_id, db)
 
     stressed_count = sum(1 for z in zones if z.severity != "healthy")
     return {
         "message": "Analysis complete",
-        "observation_id": obs.id,
+        "observation_id": obs_record.id,
         "grid_size": f"{grid_n}x{grid_n}",
         "zones_measured": len(zones),
         "hotspots_detected": stressed_count,
+        "optical_available": results.get("optical_available", True),
+        "radar_available": results.get("radar_available", False),
+        "time_series_points": len(results.get("time_series", [])),
         "is_demo": bool(results.get("is_demo", False)),
         "recommendations_generated": len(recs),
     }
