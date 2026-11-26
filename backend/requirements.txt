@@ -11,7 +11,9 @@ scipy==1.15.0
 scikit-learn==1.6.1
 opencv-python-headless==4.10.0.84
 reportlab==4.2.5
+pypdf==7.1.1
 python-multipart==0.0.20
+psycopg2-binary==2.9.10
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 httpx==0.28.1

@@ -1,14 +1,30 @@
+databases:
+  - name: farm-scouting-db
+    plan: free
+    databaseName: farm_scout
+    user: farmscout
+
 services:
   - type: web
     name: farm-scouting-backend
     runtime: python
+    plan: free
+    healthCheckPath: /health
     buildCommand: pip install -r backend/requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: farm-scouting-db
+          property: connectionString
       - key: DEMO_MODE
-        value: "True"
+        value: "False"
       - key: GEE_PROJECT_ID
-        value: ""
+        sync: false
+      - key: GEE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: PYTHONPATH

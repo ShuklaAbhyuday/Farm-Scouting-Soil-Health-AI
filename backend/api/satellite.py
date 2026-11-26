@@ -68,6 +68,80 @@ def _build_adaptive_grid(field: Field):
     return cells, zone_geoms, grid_n
 
 
+def _upsert_observation(
+    field_id: int,
+    source: str,
+    acq_date: datetime,
+    collection_id: str | None,
+    image_id: str | None,
+    cloud_cover_pct: float | None,
+    bands_metadata: dict | None,
+    is_demo: bool,
+    db: Session,
+    overwrite_indices: bool = True,
+    valid_pixel_pct: float | None = None,
+    observation_count: int | None = None,
+    composite_method: str | None = None,
+) -> tuple[SatelliteObservation, bool]:
+    """
+    Idempotently upsert one active SatelliteObservation per (field_id, source, acquisition_day).
+    Returns (observation, should_write_indices).
+    """
+    acq_day = acq_date.strftime("%Y-%m-%d")
+    existing = (
+        db.query(SatelliteObservation)
+        .filter(
+            SatelliteObservation.field_id == field_id,
+            SatelliteObservation.source == source,
+            SatelliteObservation.acquisition_day == acq_day,
+            SatelliteObservation.is_superseded == False,
+        )
+        .first()
+    )
+
+    meta_json = json.dumps(bands_metadata) if bands_metadata is not None else None
+
+    if existing:
+        if not overwrite_indices:
+            return existing, False
+        db.query(IndexResult).filter(IndexResult.observation_id == existing.id).delete()
+        existing.acquisition_date = acq_date
+        existing.collection_id = collection_id
+        existing.image_id = image_id
+        existing.cloud_cover_pct = cloud_cover_pct
+        existing.valid_pixel_pct = valid_pixel_pct
+        existing.observation_count = observation_count
+        existing.composite_method = composite_method
+        existing.bands_metadata = meta_json
+        existing.is_demo = is_demo
+        existing.status = "processed"
+        existing.processed_at = datetime.utcnow()
+        db.commit()
+        return existing, True
+
+    obs_record = SatelliteObservation(
+        field_id=field_id,
+        source=source,
+        collection_id=collection_id,
+        image_id=image_id,
+        acquisition_date=acq_date,
+        acquisition_day=acq_day,
+        cloud_cover_pct=cloud_cover_pct,
+        valid_pixel_pct=valid_pixel_pct,
+        observation_count=observation_count,
+        composite_method=composite_method,
+        bands_metadata=meta_json,
+        status="processed",
+        is_demo=is_demo,
+        is_superseded=False,
+        processed_at=datetime.utcnow(),
+    )
+    db.add(obs_record)
+    db.commit()
+    db.refresh(obs_record)
+    return obs_record, True
+
+
 def _detect_and_store_hotspots(
     field: Field,
     obs: SatelliteObservation,
@@ -75,8 +149,14 @@ def _detect_and_store_hotspots(
     cells: list,
     db: Session,
 ) -> list[Hotspot]:
-    """Score real per-zone satellite measurements and run Isolation Forest anomaly detection."""
-    if not cells:
+    """
+    Score per-zone satellite measurements and archive prior hotspots rather than deleting them.
+    """
+    if not cells or not results.get("optical_available", True):
+        return []
+
+    ndvi_stats = results.get("ndvi_stats")
+    if not ndvi_stats or ndvi_stats.get("NDVI_mean") is None:
         return []
 
     try:
@@ -84,9 +164,12 @@ def _detect_and_store_hotspots(
     except Exception:
         return []
 
-    ndvi_mean = float(results["ndvi_stats"].get("NDVI_mean", 0.5))
-    ndmi_mean = float(results["ndmi_stats"].get("NDMI_mean", 0.1))
-    ndre_mean = float(results["ndre_stats"].get("NDRE_mean", 0.3))
+    ndvi_mean = float(ndvi_stats["NDVI_mean"])
+    ndmi_stats = results.get("ndmi_stats") or {}
+    ndre_stats = results.get("ndre_stats") or {}
+    ndmi_mean = float(ndmi_stats["NDMI_mean"]) if ndmi_stats.get("NDMI_mean") is not None else None
+    ndre_mean = float(ndre_stats["NDRE_mean"]) if ndre_stats.get("NDRE_mean") is not None else None
+
     zone_stats = results.get("zone_stats", {})
     is_demo = bool(results.get("is_demo", False))
 
@@ -96,16 +179,27 @@ def _detect_and_store_hotspots(
 
     for idx, geom in enumerate(cells):
         z = zone_stats.get(idx)
-        if not z:
+        if not z or z.get("NDVI") is None:
             continue
         c_ndvi = float(z["NDVI"])
-        c_ndmi = float(z["NDMI"])
-        c_ndre = float(z["NDRE"])
+        c_ndmi = float(z["NDMI"]) if z.get("NDMI") is not None else None
+        c_ndre = float(z["NDRE"]) if z.get("NDRE") is not None else None
+
+        # Only supply measured values to DB; use field mean temporarily in feature vector if a 20m band pixel was None
+        eff_ndmi = c_ndmi if c_ndmi is not None else (ndmi_mean if ndmi_mean is not None else 0.0)
+        eff_ndre = c_ndre if c_ndre is not None else (ndre_mean if ndre_mean is not None else 0.0)
+
         valid_cells.append((geom, c_ndvi, c_ndmi, c_ndre))
         ndvi_vals.append(c_ndvi)
-        ndmi_vals.append(c_ndmi)
-        ndre_vals.append(c_ndre)
-        features.append([c_ndvi, c_ndmi, c_ndre, c_ndvi - ndvi_mean, c_ndmi - ndmi_mean])
+        ndmi_vals.append(eff_ndmi)
+        ndre_vals.append(eff_ndre)
+        features.append([
+            c_ndvi,
+            eff_ndmi,
+            eff_ndre,
+            c_ndvi - ndvi_mean,
+            eff_ndmi - (ndmi_mean if ndmi_mean is not None else eff_ndmi),
+        ])
 
     if not valid_cells:
         return []
@@ -121,7 +215,11 @@ def _detect_and_store_hotspots(
         detector.fit(np.array(features))
         ml_preds = detector.predict(np.array(features))
 
-    db.query(Hotspot).filter(Hotspot.field_id == field.id).delete()
+    # Archive previous active hotspots for this field instead of deleting historical records
+    db.query(Hotspot).filter(
+        Hotspot.field_id == field.id,
+        Hotspot.is_active == True,
+    ).update({"is_active": False}, synchronize_session=False)
     db.commit()
 
     created = []
@@ -143,22 +241,24 @@ def _detect_and_store_hotspots(
             severity = "severe"
 
         ndvi_dev = round(c_ndvi - ndvi_mean, 4)
-        ndmi_dev = round(c_ndmi - ndmi_mean, 4)
-        ndre_dev = round(c_ndre - ndre_mean, 4)
+        ndmi_dev = round(c_ndmi - ndmi_mean, 4) if (c_ndmi is not None and ndmi_mean is not None) else None
+        ndre_dev = round(c_ndre - ndre_mean, 4) if (c_ndre is not None and ndre_mean is not None) else None
 
         if severity == "healthy" and not is_ml_anomaly:
             issue = "Healthy Vegetation"
-        elif ndmi_dev < -0.08 or c_ndmi < 0.0:
+        elif (ndmi_dev is not None and ndmi_dev < -0.08) or (c_ndmi is not None and c_ndmi < 0.0):
             issue = "Moisture Stress"
-        elif ndre_dev < -0.06 or c_ndre < 0.25:
+        elif (ndre_dev is not None and ndre_dev < -0.06) or (c_ndre is not None and c_ndre < 0.25):
             issue = "Chlorophyll / Nitrogen Stress"
         else:
             issue = "Low Canopy Vigor"
 
         method = "isolation_forest" if is_ml_anomaly else "baseline_heuristic"
+        ndmi_txt = f"{c_ndmi:.2f}" if c_ndmi is not None else "N/A"
+        ndre_txt = f"{c_ndre:.2f}" if c_ndre is not None else "N/A"
         explanation = (
             f"{source_tag} ({method.replace('_', ' ')}): "
-            f"NDVI {c_ndvi:.2f} ({ndvi_dev:+.2f}), NDMI {c_ndmi:.2f} ({ndmi_dev:+.2f}), NDRE {c_ndre:.2f} ({ndre_dev:+.2f})."
+            f"NDVI {c_ndvi:.2f} ({ndvi_dev:+.2f}), NDMI {ndmi_txt}, NDRE {ndre_txt}."
         )
 
         centroid = geom.centroid
@@ -174,8 +274,8 @@ def _detect_and_store_hotspots(
             severity=severity,
             health_score=round(score, 1),
             ndvi_value=round(c_ndvi, 4),
-            ndmi_value=round(c_ndmi, 4),
-            ndre_value=round(c_ndre, 4),
+            ndmi_value=round(c_ndmi, 4) if c_ndmi is not None else None,
+            ndre_value=round(c_ndre, 4) if c_ndre is not None else None,
             ndvi_deviation=ndvi_dev,
             ndmi_deviation=ndmi_dev,
             ndre_deviation=ndre_dev,
@@ -184,6 +284,7 @@ def _detect_and_store_hotspots(
             detection_method=method,
             persistence_count=1,
             first_detected=obs.acquisition_date or datetime.utcnow(),
+            is_active=True,
         )
         db.add(hs)
         created.append(hs)
@@ -192,43 +293,59 @@ def _detect_and_store_hotspots(
     return created
 
 
-def _store_time_series(field_id: int, time_series: list[dict], latest_obs_date: datetime, db: Session):
-    """Persist historical Sentinel-2 time-series points without duplicating existing dates."""
+def _store_time_series(field_id: int, time_series: list[dict], is_demo: bool, db: Session):
+    """Persist historical Sentinel-2 dates/composites idempotently with full quality provenance."""
     if not time_series:
         return
-    existing = db.query(SatelliteObservation).filter(SatelliteObservation.field_id == field_id).all()
-    existing_days = {
-        o.acquisition_date.strftime("%Y-%m-%d")
-        for o in existing
-        if o.acquisition_date
-    }
-    latest_day = latest_obs_date.strftime("%Y-%m-%d") if latest_obs_date else None
 
     for pt in time_series:
         dt = pt["acquisition_date"]
-        day = dt.strftime("%Y-%m-%d")
-        if day == latest_day or day in existing_days:
-            continue
-        existing_days.add(day)
-        hist_obs = SatelliteObservation(
+        source = pt.get("source") or ("demo-simulation" if is_demo else "sentinel-2")
+        obs_count = pt.get("observation_count", 1)
+        valid_pct = pt.get("valid_pixel_pct")
+        comp_method = pt.get("composite_method") or ("demo_simulated" if is_demo else "single_scene")
+        meta_payload = {
+            "scale_m": 20,
+            "origin": "time_series_180d_composite",
+            "is_demo": is_demo,
+            "valid_pixel_pct": valid_pct,
+            "observation_count": obs_count,
+            "composite_method": comp_method,
+            "composite_period_start": pt.get("composite_period_start"),
+            "composite_period_end": pt.get("composite_period_end"),
+            "contributing_image_ids": pt.get("contributing_image_ids", []),
+        }
+        hist_obs, should_write = _upsert_observation(
             field_id=field_id,
-            acquisition_date=dt,
-            cloud_cover_pct=pt.get("cloud_cover", 0.0),
-            status="processed",
-            processed_at=datetime.utcnow(),
+            source=source,
+            acq_date=dt,
+            collection_id=pt.get("collection_id"),
+            image_id=pt.get("image_id"),
+            cloud_cover_pct=pt.get("cloud_cover"),
+            bands_metadata=meta_payload,
+            is_demo=is_demo,
+            db=db,
+            overwrite_indices=False,  # preserve existing higher-detail observations intact
+            valid_pixel_pct=valid_pct,
+            observation_count=obs_count,
+            composite_method=comp_method,
         )
-        db.add(hist_obs)
-        db.flush()
+        if not should_write:
+            continue
+
         for idx_name in ["NDVI", "EVI", "SAVI", "GNDVI", "NDMI", "NDRE"]:
-            val = float(pt.get(idx_name, 0.0))
+            val = pt.get(idx_name)
+            if val is None:
+                continue
+            fval = float(val)
             db.add(
                 IndexResult(
                     observation_id=hist_obs.id,
                     index_type=idx_name,
-                    mean_value=val,
-                    min_value=val,
-                    max_value=val,
-                    std_value=0.0,
+                    mean_value=fval,
+                    min_value=None,
+                    max_value=None,
+                    std_value=None,
                 )
             )
     db.commit()
@@ -261,92 +378,132 @@ def analyze_field(
     if not results:
         raise HTTPException(status_code=404, detail="No valid satellite data found in date range")
 
-    acq_date = results["acquisition_date"]
+    is_demo = bool(results.get("is_demo", False))
+    optical_available = bool(results.get("optical_available", True))
+    radar_available = bool(results.get("radar_available", False))
 
-    # Upsert if the exact same acquisition day already exists so repeated clicks stay clean
-    day_prefix = acq_date.strftime("%Y-%m-%d")
-    obs = (
-        db.query(SatelliteObservation)
-        .filter(SatelliteObservation.field_id == field_id)
-        .order_by(SatelliteObservation.id.desc())
-        .all()
-    )
-    existing_same_day = next(
-        (o for o in obs if o.acquisition_date and o.acquisition_date.strftime("%Y-%m-%d") == day_prefix),
-        None,
-    )
+    primary_obs = None
+    optical_obs = None
+    radar_obs = None
 
-    if existing_same_day:
-        db.query(IndexResult).filter(IndexResult.observation_id == existing_same_day.id).delete()
-        existing_same_day.cloud_cover_pct = results["cloud_cover"]
-        existing_same_day.processed_at = datetime.utcnow()
-        obs_record = existing_same_day
-        db.commit()
-    else:
-        obs_record = SatelliteObservation(
+    # 1. Persist Optical Observation (Sentinel-2 or Demo) ONLY when optical data exists
+    if optical_available:
+        opt_source = "demo-simulation" if is_demo else "sentinel-2"
+        optical_obs, _ = _upsert_observation(
             field_id=field_id,
-            acquisition_date=acq_date,
-            cloud_cover_pct=results["cloud_cover"],
-            status="processed",
-            processed_at=datetime.utcnow(),
-        )
-        db.add(obs_record)
-        db.commit()
-        db.refresh(obs_record)
-
-    optical_pairs = [
-        ("NDVI", results["ndvi_stats"]),
-        ("EVI", results["evi_stats"]),
-        ("SAVI", results["savi_stats"]),
-        ("GNDVI", results["gndvi_stats"]),
-        ("NDMI", results["ndmi_stats"]),
-        ("NDRE", results["ndre_stats"]),
-    ]
-    for idx_name, stats in optical_pairs:
-        db.add(
-            IndexResult(
-                observation_id=obs_record.id,
-                index_type=idx_name,
-                mean_value=stats[f"{idx_name}_mean"],
-                min_value=stats[f"{idx_name}_min"],
-                max_value=stats[f"{idx_name}_max"],
-                std_value=stats[f"{idx_name}_stdDev"],
-            )
+            source=opt_source,
+            acq_date=results["acquisition_date"],
+            collection_id=results.get("collection_id"),
+            image_id=results.get("image_id"),
+            cloud_cover_pct=results.get("cloud_cover"),
+            bands_metadata=results.get("bands_metadata"),
+            is_demo=is_demo,
+            db=db,
+            overwrite_indices=True,
+            valid_pixel_pct=results.get("valid_pixel_pct"),
+            observation_count=results.get("observation_count", 1),
+            composite_method=results.get("composite_method"),
         )
 
-    s1_stats = results.get("s1_stats")
-    if s1_stats:
-        for s1_key in ["S1_VV", "S1_VH", "S1_RVI"]:
-            val = float(s1_stats.get(s1_key, 0.0))
+        optical_pairs = [
+            ("NDVI", results.get("ndvi_stats")),
+            ("EVI", results.get("evi_stats")),
+            ("SAVI", results.get("savi_stats")),
+            ("GNDVI", results.get("gndvi_stats")),
+            ("NDMI", results.get("ndmi_stats")),
+            ("NDRE", results.get("ndre_stats")),
+        ]
+        for idx_name, stats in optical_pairs:
+            if not stats or stats.get(f"{idx_name}_mean") is None:
+                continue
             db.add(
                 IndexResult(
-                    observation_id=obs_record.id,
-                    index_type=s1_key,
-                    mean_value=val,
-                    min_value=val,
-                    max_value=val,
-                    std_value=0.0,
+                    observation_id=optical_obs.id,
+                    index_type=idx_name,
+                    mean_value=stats[f"{idx_name}_mean"],
+                    min_value=stats.get(f"{idx_name}_min"),
+                    max_value=stats.get(f"{idx_name}_max"),
+                    std_value=stats.get(f"{idx_name}_stdDev"),
                 )
             )
-    db.commit()
+        db.commit()
+        primary_obs = optical_obs
 
-    # Save historical Sentinel-2 time series for phenology/growth curve
-    _store_time_series(field_id, results.get("time_series", []), acq_date, db)
+    # 2. Persist Sentinel-1 SAR Observation independently with its own acquisition timestamp & provenance
+    s1_stats = results.get("s1_stats")
+    if radar_available and s1_stats:
+        s1_source = "demo-simulation" if is_demo else "sentinel-1"
+        s1_meta = {
+            "orbit_pass": s1_stats.get("orbit_pass"),
+            "relative_orbit": s1_stats.get("relative_orbit"),
+            "incidence_angle_deg": s1_stats.get("incidence_angle_deg"),
+            "vv_linear_mean": s1_stats.get("vv_linear_mean"),
+            "vh_linear_mean": s1_stats.get("vh_linear_mean"),
+            "baseline_vv_db": s1_stats.get("baseline_vv_db"),
+            "baseline_vh_db": s1_stats.get("baseline_vh_db"),
+            "delta_vv_db": s1_stats.get("delta_vv_db"),
+            "baseline_obs_count": s1_stats.get("baseline_obs_count", 0),
+            "orbit_consistent": s1_stats.get("orbit_consistent", True),
+            "rvi_formula": s1_stats.get("rvi_formula"),
+            "rvi_expected_range": s1_stats.get("rvi_expected_range"),
+            "averaging_domain": s1_stats.get("averaging_domain", "linear_power_before_db"),
+            "scale_m": s1_stats.get("spatial_scale_m", 10),
+            "is_demo": is_demo,
+        }
+        radar_obs, _ = _upsert_observation(
+            field_id=field_id,
+            source=s1_source,
+            acq_date=s1_stats["acquisition_date"],
+            collection_id=s1_stats.get("collection_id"),
+            image_id=s1_stats.get("image_id"),
+            cloud_cover_pct=None,  # Radar does not have optical cloud cover
+            bands_metadata=s1_meta,
+            is_demo=is_demo,
+            db=db,
+            overwrite_indices=True,
+            valid_pixel_pct=None,
+            observation_count=1,
+            composite_method="single_orbit_pass",
+        )
+        for s1_key in ["S1_VV", "S1_VH", "S1_RVI"]:
+            val = s1_stats.get(s1_key)
+            if val is None:
+                continue
+            db.add(
+                IndexResult(
+                    observation_id=radar_obs.id,
+                    index_type=s1_key,
+                    mean_value=float(val),
+                    min_value=None,
+                    max_value=None,
+                    std_value=None,
+                )
+            )
+        db.commit()
+        if primary_obs is None:
+            primary_obs = radar_obs
 
-    zones = _detect_and_store_hotspots(field, obs_record, results, cells, db)
+    # 3. Store historical Sentinel-2 time series without overwriting existing observations
+    _store_time_series(field_id, results.get("time_series", []), is_demo, db)
+
+    zones = _detect_and_store_hotspots(field, optical_obs or primary_obs, results, cells, db)
     recs = generate_and_store_recommendations(field_id, db)
 
     stressed_count = sum(1 for z in zones if z.severity != "healthy")
     return {
         "message": "Analysis complete",
-        "observation_id": obs_record.id,
+        "observation_id": primary_obs.id if primary_obs else None,
+        "optical_observation_id": optical_obs.id if optical_obs else None,
+        "radar_observation_id": radar_obs.id if radar_obs else None,
         "grid_size": f"{grid_n}x{grid_n}",
         "zones_measured": len(zones),
         "hotspots_detected": stressed_count,
-        "optical_available": results.get("optical_available", True),
-        "radar_available": results.get("radar_available", False),
+        "optical_available": optical_available,
+        "radar_available": radar_available,
         "time_series_points": len(results.get("time_series", [])),
-        "is_demo": bool(results.get("is_demo", False)),
+        "time_series_gaps": len(results.get("time_series_gaps", [])),
+        "time_series_meta": results.get("time_series_meta"),
+        "is_demo": is_demo,
         "recommendations_generated": len(recs),
     }
 

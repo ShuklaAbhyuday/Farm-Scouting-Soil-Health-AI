@@ -12,6 +12,7 @@ from backend.models.satellite import SatelliteObservation, IndexResult
 from backend.models.soil_sample import SoilSample
 from backend.schemas.recommendation import RecommendationCreate, RecommendationResponse
 from backend.services.crop_recommendation_service import recommend_crops
+from backend.services.fertilizer_service import build_fertilizer_plan
 from backend.services.recommendation_service import RecommendationService
 
 router = APIRouter()
@@ -49,8 +50,12 @@ def _compute_crop_recommendation(
 
     latest_obs = (
         db.query(SatelliteObservation)
-        .filter(SatelliteObservation.field_id == field_id)
-        .order_by(SatelliteObservation.acquisition_date.desc())
+        .filter(
+            SatelliteObservation.field_id == field_id,
+            SatelliteObservation.is_superseded == False,
+            SatelliteObservation.source.in_(["sentinel-2", "demo-simulation"]),
+        )
+        .order_by(SatelliteObservation.is_demo.asc(), SatelliteObservation.acquisition_date.desc(), SatelliteObservation.id.desc())
         .first()
     )
     ndmi_mean = None
@@ -60,7 +65,7 @@ def _compute_crop_recommendation(
             .filter(IndexResult.observation_id == latest_obs.id, IndexResult.index_type == "NDMI")
             .first()
         )
-        if ndmi_idx:
+        if ndmi_idx and ndmi_idx.mean_value is not None:
             ndmi_mean = ndmi_idx.mean_value
 
     use_sample = latest_sample is not None and (payload is None or payload.use_latest_sample)
@@ -136,6 +141,59 @@ def post_crop_recommendation(
     return _compute_crop_recommendation(field_id, payload, db)
 
 
+@router.get("/fields/{field_id}/fertilizer-recommendation")
+def get_fertilizer_recommendation(
+    field_id: int,
+    sample_id: Optional[int] = None,
+    crop_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Return structured Fertilizer Recommendation System plan for the selected/latest soil sample."""
+    field = db.query(Field).filter(Field.id == field_id).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    if sample_id is not None:
+        sample = (
+            db.query(SoilSample)
+            .filter(SoilSample.id == sample_id, SoilSample.field_id == field_id)
+            .first()
+        )
+    else:
+        sample = (
+            db.query(SoilSample)
+            .filter(SoilSample.field_id == field_id)
+            .order_by(SoilSample.created_at.desc())
+            .first()
+        )
+
+    latest_obs = (
+        db.query(SatelliteObservation)
+        .filter(
+            SatelliteObservation.field_id == field_id,
+            SatelliteObservation.is_superseded == False,
+            SatelliteObservation.source.in_(["sentinel-2", "demo-simulation"]),
+        )
+        .order_by(SatelliteObservation.is_demo.asc(), SatelliteObservation.acquisition_date.desc(), SatelliteObservation.id.desc())
+        .first()
+    )
+    opt_vals: dict[str, float] = {}
+    if latest_obs:
+        for idx in db.query(IndexResult).filter(IndexResult.observation_id == latest_obs.id).all():
+            if idx.mean_value is not None:
+                opt_vals[idx.index_type.upper()] = float(idx.mean_value)
+
+    return build_fertilizer_plan(
+        field_name=field.name,
+        crop_type=crop_type or field.crop_type,
+        area_ha=field.area_ha,
+        soil_sample=sample,
+        ndre_mean=opt_vals.get("NDRE"),
+        ndvi_mean=opt_vals.get("NDVI"),
+        ndmi_mean=opt_vals.get("NDMI"),
+    )
+
+
 def generate_and_store_recommendations(field_id: int, db: Session) -> list[Recommendation]:
     field = db.query(Field).filter(Field.id == field_id).first()
     if not field:
@@ -143,15 +201,20 @@ def generate_and_store_recommendations(field_id: int, db: Session) -> list[Recom
 
     latest_obs = (
         db.query(SatelliteObservation)
-        .filter(SatelliteObservation.field_id == field_id)
-        .order_by(SatelliteObservation.acquisition_date.desc())
+        .filter(
+            SatelliteObservation.field_id == field_id,
+            SatelliteObservation.is_superseded == False,
+            SatelliteObservation.source.in_(["sentinel-2", "demo-simulation"]),
+        )
+        .order_by(SatelliteObservation.is_demo.asc(), SatelliteObservation.acquisition_date.desc(), SatelliteObservation.id.desc())
         .first()
     )
     satellite_data = {"NDVI_mean": 0.65, "NDMI_mean": 0.25, "NDRE_mean": 0.42}
     if latest_obs:
         indices = db.query(IndexResult).filter(IndexResult.observation_id == latest_obs.id).all()
         for idx in indices:
-            satellite_data[f"{idx.index_type.upper()}_mean"] = idx.mean_value
+            if idx.mean_value is not None:
+                satellite_data[f"{idx.index_type.upper()}_mean"] = idx.mean_value
 
     soil_samples = (
         db.query(SoilSample)

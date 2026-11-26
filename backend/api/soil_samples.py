@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from backend.models.field import Field
 from backend.models.soil_sample import SoilSample
 from backend.schemas.soil_sample import SoilSampleUpdate
 from backend.services.crop_recommendation_service import analyze_soil_sample
+from backend.services.soil_pdf_parser import extract_text_from_pdf_bytes, parse_soil_report_text
 from backend.utils.geo import find_centroid
 
 router = APIRouter()
@@ -152,3 +153,41 @@ def delete_soil_sample(sample_id: int, db: Session = Depends(get_db)):
     db.delete(sample)
     db.commit()
     return {"deleted": True, "id": sample_id}
+
+
+@router.post("/soil-samples/parse-pdf")
+async def parse_soil_report_pdf(file: UploadFile = File(...)):
+    """Extract N, P, K, pH, moisture, and texture fields from an uploaded Soil Lab Report PDF."""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".pdf") and file.content_type not in ("application/pdf", "application/x-pdf"):
+        raise HTTPException(status_code=400, detail="Please upload a valid .pdf soil report file.")
+
+    pdf_bytes = await file.read()
+    if not pdf_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded PDF file is empty.")
+    if len(pdf_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="PDF file exceeds the 10 MB size limit.")
+
+    try:
+        raw_text, page_count = extract_text_from_pdf_bytes(pdf_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read PDF file: {exc}")
+
+    if not raw_text.strip():
+        return {
+            "filename": file.filename,
+            "page_count": page_count,
+            "extraction_success": False,
+            "detected_keys": [],
+            "missing_keys": ["nitrogen", "phosphorus", "potassium", "ph"],
+            "unit_conversions": [],
+            "parsed_fields": {},
+            "text_preview": "",
+            "warning": "This PDF has no selectable text (it may be a scanned image). Please enter soil values manually.",
+        }
+
+    result = parse_soil_report_text(raw_text, page_count=page_count)
+    result["filename"] = file.filename
+    if not result["extraction_success"]:
+        result["warning"] = "No standard soil metrics (N, P, K, pH, Moisture, Texture) matched automatically. You can review the extracted preview and fill fields manually."
+    return result

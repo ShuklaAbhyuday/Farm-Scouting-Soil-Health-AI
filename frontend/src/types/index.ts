@@ -212,28 +212,89 @@ export interface DashboardSummary {
   growth_stage?: string;
   area_ha?: number;
   latest_observation_date?: string;
+  optical_timestamp_precision?: 'exact' | 'approximate' | 'composite_window' | 'simulated' | 'unavailable';
+  radar_observation_date?: string | null;
+  radar_timestamp_precision?: 'exact' | 'approximate' | 'composite_window' | 'simulated' | 'unavailable';
+  is_demo?: boolean | null;
+  optical_source?: string | null;
+  radar_source?: string | null;
+  optical_quality?: {
+    available: boolean;
+    source?: string | null;
+    collection_id?: string | null;
+    image_id?: string | null;
+    acquisition_date?: string | null;
+    timestamp_precision: string;
+    timestamp_note?: string;
+    cloud_cover_pct?: number | null;
+    valid_pixel_pct?: number | null;
+    observation_count?: number | null;
+    composite_method?: string | null;
+    spatial_scale_m?: number | null;
+  };
+  radar_quality?: {
+    available: boolean;
+    source?: string | null;
+    collection_id?: string | null;
+    image_id?: string | null;
+    acquisition_date?: string | null;
+    timestamp_precision: string;
+    timestamp_note?: string;
+    orbit_pass?: string | null;
+    relative_orbit?: number | null;
+    incidence_angle_deg?: number | null;
+    baseline_vv_db?: number | null;
+    delta_vv_db?: number | null;
+    baseline_obs_count?: number;
+    orbit_consistent?: boolean;
+    averaging_domain?: string | null;
+    rvi_formula?: string | null;
+    rvi_expected_range?: string | null;
+    spatial_scale_m?: number | null;
+    limitation?: string;
+  };
+  radar_wetness_assessment?: {
+    status: string;
+    method: string;
+    delta_vv_db?: number | null;
+    baseline_obs_count: number;
+    orbit_consistent: boolean;
+    limitation: string;
+  };
+  scientific_provenance?: Record<string, any>;
   overall_health: string;
   health_score: number;
   total_hotspots: number;
   critical_hotspots: number;
-  ndvi_mean?: number;
-  evi_mean?: number;
-  savi_mean?: number;
-  gndvi_mean?: number;
-  ndmi_mean?: number;
-  ndre_mean?: number;
-  s1_vv?: number;
-  s1_vh?: number;
-  s1_rvi?: number;
+  ndvi_mean?: number | null;
+  evi_mean?: number | null;
+  savi_mean?: number | null;
+  gndvi_mean?: number | null;
+  ndmi_mean?: number | null;
+  ndre_mean?: number | null;
+  s1_vv?: number | null;
+  s1_vh?: number | null;
+  s1_rvi?: number | null;
   surface_wetness_status?: string;
   phenology?: {
     stage: string;
+    stage_confidence?: string;
     land_status: string;
     peak_ndvi?: number | null;
     peak_date?: string | null;
     latest_date?: string | null;
+    season_start_date?: string | null;
+    season_span_days?: number;
     observation_count: number;
+    total_archive_observations?: number;
+    season_count?: number;
+    previous_seasons?: Array<Record<string, any>>;
     ndvi_change?: number | null;
+    ndvi_change_per_week?: number | null;
+    elapsed_days_since_prev?: number | null;
+    consecutive_declines?: number;
+    crop_calendar_context?: Record<string, any>;
+    limitation?: string;
   };
   ndvi_trend?: 'improving' | 'stable' | 'declining';
   recent_recommendations: Recommendation[];
@@ -242,10 +303,84 @@ export interface DashboardSummary {
 
 export interface HistoricalData {
   dates: string[];
-  ndvi: number[];
-  ndmi: number[];
-  ndre: number[];
-  health_scores: number[];
+  ndvi: Array<number | null>;
+  evi?: Array<number | null>;
+  savi?: Array<number | null>;
+  gndvi?: Array<number | null>;
+  ndmi: Array<number | null>;
+  ndre: Array<number | null>;
+  health_scores: Array<number | null>;
+  observations?: Array<Record<string, any>>;
+  missing_gap_periods?: Array<Record<string, any>>;
 }
 
 export type SeverityLevel = 'healthy' | 'mild' | 'moderate' | 'severe';
+
+export interface SoilPdfParseResponse {
+  filename?: string;
+  page_count: number;
+  extraction_success: boolean;
+  detected_keys: string[];
+  missing_keys: string[];
+  unit_conversions: string[];
+  text_preview: string;
+  warning?: string;
+  parsed_fields: {
+    nitrogen_level?: string | null;
+    nitrogen_value?: number | null;
+    phosphorus_level?: string | null;
+    phosphorus_value?: number | null;
+    potassium_level?: string | null;
+    potassium_value?: number | null;
+    ph_value?: number | null;
+    moisture_level?: string | null;
+    moisture_value?: number | null;
+    soil_texture?: string | null;
+    source?: string;
+    is_validated?: boolean;
+  };
+}
+
+export interface FertilizerRecommendationItem {
+  nutrient: string;
+  product: string;
+  soil_level: string;
+  measured_mg_kg?: number | null;
+  action: string;
+  priority: 'low' | 'medium' | 'high';
+  rate_kg_ha?: number | null;
+  total_field_kg?: number | null;
+  timing: string;
+  reasoning: string;
+}
+
+export interface FertilizerRecommendationResponse {
+  status: 'lab_verified_plan' | 'unvalidated_estimate' | 'soil_sample_required';
+  can_prescribe_dosage: boolean;
+  is_validated: boolean;
+  sample_id?: number;
+  sample_source?: string;
+  crop_type: string;
+  area_ha: number;
+  soil_texture?: string;
+  ph_value?: number;
+  summary: string;
+  recommendations: FertilizerRecommendationItem[];
+  ph_amendment?: {
+    status: string;
+    title: string;
+    rate_kg_ha?: number | null;
+    total_field_kg?: number | null;
+    timing: string;
+    reasoning: string;
+  } | null;
+  total_field_materials: Array<{
+    product: string;
+    rate_kg_ha: number;
+    total_kg: number;
+    bags_50kg: number;
+  }>;
+  application_tips: string[];
+  satellite_context: string[];
+  limitation: string;
+}

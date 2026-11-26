@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, Text, ForeignKey
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
@@ -27,6 +27,7 @@ class Hotspot(Base):
     detection_method = Column(String, nullable=False) # "baseline_heuristic" or "isolation_forest"
     persistence_count = Column(Integer, default=1)
     first_detected = Column(DateTime, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     field = relationship("Field", back_populates="hotspots")

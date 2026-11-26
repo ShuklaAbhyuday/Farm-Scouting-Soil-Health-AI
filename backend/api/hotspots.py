@@ -36,25 +36,24 @@ def _serialize_hotspot(h: Hotspot) -> dict:
         "explanation": h.explanation,
         "detection_method": h.detection_method,
         "persistence_count": h.persistence_count,
+        "is_active": h.is_active,
         "first_detected": h.first_detected.isoformat() if h.first_detected else None,
         "created_at": h.created_at.isoformat() if h.created_at else None,
     }
 
 
 @router.get("/fields/{field_id}/hotspots")
-def list_field_hotspots(field_id: int, db: Session = Depends(get_db)):
-    hotspots = (
-        db.query(Hotspot)
-        .filter(Hotspot.field_id == field_id)
-        .order_by(Hotspot.health_score.asc(), Hotspot.id.desc())
-        .all()
-    )
+def list_field_hotspots(field_id: int, include_historical: bool = False, db: Session = Depends(get_db)):
+    q = db.query(Hotspot).filter(Hotspot.field_id == field_id)
+    if not include_historical:
+        q = q.filter(Hotspot.is_active == True)
+    hotspots = q.order_by(Hotspot.health_score.asc(), Hotspot.id.desc()).all()
     return [_serialize_hotspot(h) for h in hotspots]
 
 
 @router.get("/fields/{field_id}/hotspots/summary")
 def hotspot_summary(field_id: int, db: Session = Depends(get_db)):
-    hotspots = db.query(Hotspot).filter(Hotspot.field_id == field_id).all()
+    hotspots = db.query(Hotspot).filter(Hotspot.field_id == field_id, Hotspot.is_active == True).all()
     counts = {"healthy": 0, "mild": 0, "moderate": 0, "severe": 0}
     for h in hotspots:
         counts[h.severity] = counts.get(h.severity, 0) + 1
@@ -87,7 +86,7 @@ def get_hotspot_history(hotspot_id: int, db: Session = Depends(get_db)):
         db.query(Hotspot)
         .filter(Hotspot.field_id == hotspot.field_id)
         .order_by(Hotspot.created_at.desc())
-        .limit(10)
+        .limit(20)
         .all()
     )
     return [_serialize_hotspot(h) for h in related]

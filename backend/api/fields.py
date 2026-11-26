@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -150,31 +151,72 @@ def get_field_history(field_id: int, db: Session = Depends(get_db)):
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
 
-    observations = (
+    all_active = (
         db.query(SatelliteObservation)
-        .filter(SatelliteObservation.field_id == field_id)
-        .order_by(SatelliteObservation.acquisition_date.asc())
+        .filter(
+            SatelliteObservation.field_id == field_id,
+            SatelliteObservation.is_superseded == False,
+        )
+        .order_by(SatelliteObservation.acquisition_date.asc(), SatelliteObservation.id.asc())
         .all()
     )
 
+    # Never contaminate real Sentinel-2 phenology with demo observations
+    real_optical = [o for o in all_active if not o.is_demo and o.source == "sentinel-2"]
+    if real_optical:
+        observations = real_optical
+    else:
+        observations = [o for o in all_active if o.is_demo]
+
     dates, ndvi, evi, savi, gndvi, ndmi, ndre, health_scores, records = [], [], [], [], [], [], [], [], []
+    seen_days = set()
     for obs in observations:
         indices = db.query(IndexResult).filter(IndexResult.observation_id == obs.id).all()
-        idx_map = {i.index_type.upper(): i.mean_value for i in indices}
-        ndvi_v = round(idx_map.get("NDVI", 0.0), 4)
-        evi_v = round(idx_map.get("EVI", ndvi_v * 0.88), 4)
-        savi_v = round(idx_map.get("SAVI", ndvi_v * 0.82), 4)
-        gndvi_v = round(idx_map.get("GNDVI", ndvi_v * 0.92), 4)
-        ndmi_v = round(idx_map.get("NDMI", 0.0), 4)
-        ndre_v = round(idx_map.get("NDRE", 0.0), 4)
+        idx_map = {i.index_type.upper(): i.mean_value for i in indices if i.mean_value is not None}
+        if "NDVI" not in idx_map:
+            continue
+
+        date_str = obs.acquisition_date.strftime("%Y-%m-%d") if obs.acquisition_date else ""
+        if date_str in seen_days:
+            continue
+        seen_days.add(date_str)
+
+        def _opt(key: str):
+            val = idx_map.get(key)
+            return round(float(val), 4) if val is not None else None
+
+        ndvi_v = _opt("NDVI")
+        evi_v = _opt("EVI")
+        savi_v = _opt("SAVI")
+        gndvi_v = _opt("GNDVI")
+        ndmi_v = _opt("NDMI")
+        ndre_v = _opt("NDRE")
 
         obs_hotspots = db.query(Hotspot).filter(Hotspot.observation_id == obs.id).all()
         if obs_hotspots:
             score = round(sum(h.health_score for h in obs_hotspots) / len(obs_hotspots), 1)
-        else:
+        elif ndvi_v is not None and ndmi_v is not None and ndre_v is not None:
             score = round(min(100.0, max(0.0, (0.4 * ndvi_v + 0.35 * ((ndmi_v + 1) / 2) + 0.25 * ndre_v) * 120)), 1)
+        else:
+            score = None
 
-        date_str = obs.acquisition_date.strftime("%Y-%m-%d") if obs.acquisition_date else ""
+        meta = {}
+        if obs.bands_metadata:
+            try:
+                parsed = json.loads(obs.bands_metadata)
+                if isinstance(parsed, dict):
+                    meta = parsed
+            except Exception:
+                pass
+
+        ts_prec = (
+            "simulated" if obs.is_demo else (
+                "approximate" if meta.get("timestamp_precision") == "migrated_legacy_approximate_day" else (
+                    "composite_window" if (obs.composite_method or meta.get("composite_method")) == "10d_median_composite" else "exact"
+                )
+            )
+        )
+
         dates.append(date_str)
         ndvi.append(ndvi_v)
         evi.append(evi_v)
@@ -185,6 +227,11 @@ def get_field_history(field_id: int, db: Session = Depends(get_db)):
         health_scores.append(score)
         records.append({
             "observation_id": obs.id,
+            "source": obs.source,
+            "collection_id": obs.collection_id,
+            "image_id": obs.image_id,
+            "is_demo": bool(obs.is_demo),
+            "timestamp_precision": ts_prec,
             "date": date_str,
             "ndvi": ndvi_v,
             "evi": evi_v,
@@ -192,10 +239,35 @@ def get_field_history(field_id: int, db: Session = Depends(get_db)):
             "gndvi": gndvi_v,
             "ndmi": ndmi_v,
             "ndre": ndre_v,
-            "cloud_cover_pct": round(obs.cloud_cover_pct or 0.0, 2),
+            "cloud_cover_pct": round(obs.cloud_cover_pct, 2) if obs.cloud_cover_pct is not None else None,
+            "valid_pixel_pct": (
+                round(obs.valid_pixel_pct, 2)
+                if obs.valid_pixel_pct is not None
+                else meta.get("valid_pixel_pct")
+            ),
+            "observation_count": (
+                obs.observation_count
+                if obs.observation_count is not None
+                else meta.get("observation_count")
+            ),
+            "composite_method": obs.composite_method or meta.get("composite_method"),
+            "composite_period_start": meta.get("composite_period_start"),
+            "composite_period_end": meta.get("composite_period_end"),
             "health_score": score,
             "hotspot_count": len(obs_hotspots),
         })
+
+    gap_periods = []
+    for i in range(1, len(dates)):
+        d_prev = datetime.strptime(dates[i - 1], "%Y-%m-%d")
+        d_cur = datetime.strptime(dates[i], "%Y-%m-%d")
+        delta_d = (d_cur - d_prev).days
+        if delta_d > 15:
+            gap_periods.append({
+                "after_date": dates[i - 1],
+                "before_date": dates[i],
+                "gap_days": delta_d,
+            })
 
     return {
         "dates": dates,
@@ -207,4 +279,5 @@ def get_field_history(field_id: int, db: Session = Depends(get_db)):
         "ndre": ndre,
         "health_scores": health_scores,
         "observations": records,
+        "missing_gap_periods": gap_periods,
     }
