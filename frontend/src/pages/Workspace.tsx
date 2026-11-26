@@ -511,7 +511,7 @@ const Workspace: React.FC = () => {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `terrascan_field_${selectedFieldId}_report.pdf`;
+      a.download = `croppulse_field_${selectedFieldId}_report.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -550,7 +550,7 @@ const Workspace: React.FC = () => {
           <div className="brand-mark">
             <Sprout size={19} strokeWidth={2.3} />
           </div>
-          <span>TerraScan</span>
+          <span>CropPulse</span>
         </div>
 
         <nav className="stepper-rail" aria-label="Workflow steps">
@@ -622,7 +622,7 @@ const Workspace: React.FC = () => {
       </header>
 
       {/* EDITORIAL AERIAL HERO BANNER */}
-      <section ref={heroRef} className="hero-banner" aria-label="TerraScan Agricultural Overview">
+      <section ref={heroRef} className="hero-banner" aria-label="CropPulse Agricultural Overview">
         <div className="hero-particles" aria-hidden="true">
           {[0, 1, 2, 3, 4].map((n) => (
             <Sprout

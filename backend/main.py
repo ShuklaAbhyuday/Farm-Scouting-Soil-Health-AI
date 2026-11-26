@@ -90,7 +90,7 @@ def on_startup():
 
 @app.get("/")
 def root_status():
-    return {"status": "ok", "service": "TerraScan API"}
+    return {"status": "ok", "service": "CropPulse API"}
 
 
 @app.get("/health")
