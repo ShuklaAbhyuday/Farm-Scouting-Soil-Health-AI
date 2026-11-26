@@ -15,7 +15,7 @@ router = APIRouter()
 
 def compute_phenology_summary(observations: list[SatelliteObservation], db: Session) -> dict:
     """Derive crop growth stage, peak vigor, and active/fallow status from Sentinel-2 time series."""
-    points = []
+    by_day = {}
     for obs in observations:
         ndvi_row = (
             db.query(IndexResult)
@@ -23,7 +23,11 @@ def compute_phenology_summary(observations: list[SatelliteObservation], db: Sess
             .first()
         )
         if ndvi_row and obs.acquisition_date:
-            points.append((obs.acquisition_date, float(ndvi_row.mean_value)))
+            day = obs.acquisition_date.strftime("%Y-%m-%d")
+            if day not in by_day:
+                by_day[day] = (obs.acquisition_date, float(ndvi_row.mean_value))
+
+    points = list(by_day.values())
 
     if not points:
         return {
@@ -102,7 +106,7 @@ def get_dashboard(field_id: int, db: Session = Depends(get_db)):
     all_obs = (
         db.query(SatelliteObservation)
         .filter(SatelliteObservation.field_id == field_id, SatelliteObservation.status == "processed")
-        .order_by(SatelliteObservation.acquisition_date.desc())
+        .order_by(SatelliteObservation.acquisition_date.desc(), SatelliteObservation.id.desc())
         .all()
     )
     latest_obs = all_obs[0] if all_obs else None
