@@ -1,4 +1,23 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { gsap } from 'gsap';
+import {
+  ArrowRight,
+  ArrowUpRight,
+  Compass,
+  Download,
+  FileText,
+  FlaskConical,
+  Layers,
+  MapPin,
+  Play,
+  Radar,
+  RefreshCw,
+  Satellite,
+  Sparkles,
+  Sprout,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import InteractiveFieldMap, { computePolygonAreaHa } from '../components/Map/InteractiveFieldMap';
 import TimeSeriesChart from '../components/Charts/TimeSeriesChart';
 import api from '../services/api';
@@ -11,18 +30,22 @@ import {
   createSoilSample,
   deleteSoilSample,
   getSoilSamples,
+  parseSoilReportPdf,
   updateSoilSample,
 } from '../services/soilService';
 import {
   computeCropRecommendations,
   getCropRecommendations,
+  getFertilizerRecommendations,
 } from '../services/recommendationService';
 import { downloadReport, generateReport } from '../services/reportService';
 import { CROP_TYPES, SOIL_TEXTURES } from '../utils/constants';
 import {
   CropRecommendationResponse,
   DashboardSummary,
+  FertilizerRecommendationResponse,
   Hotspot,
+  SoilPdfParseResponse,
   SoilSample,
 } from '../types';
 
@@ -94,23 +117,40 @@ const Workspace: React.FC = () => {
   });
   const [submittingSoil, setSubmittingSoil] = useState<boolean>(false);
   const [soilStatus, setSoilStatus] = useState<string | null>(null);
+  const [soilInputMode, setSoilInputMode] = useState<'manual' | 'pdf'>('manual');
+  const [uploadingPdf, setUploadingPdf] = useState<boolean>(false);
+  const [pdfParseResult, setPdfParseResult] = useState<SoilPdfParseResponse | null>(null);
+  const [pdfParseError, setPdfParseError] = useState<string | null>(null);
 
   const [cropRecs, setCropRecs] = useState<CropRecommendationResponse | null>(null);
+  const [fertilizerPlan, setFertilizerPlan] = useState<FertilizerRecommendationResponse | null>(null);
   const [seasonFilter, setSeasonFilter] = useState<string>('All');
   const [loadingCrops, setLoadingCrops] = useState<boolean>(false);
   const [downloadingPdf, setDownloadingPdf] = useState<boolean>(false);
+  const heroRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const ctx = gsap.context(() => {
+      gsap.from('.hero-meta', { y: 18, opacity: 0, duration: 0.7, delay: 0.08, ease: 'power3.out' });
+      gsap.from('.hero-line-1', { y: 28, opacity: 0, duration: 0.85, delay: 0.18, ease: 'power3.out' });
+      gsap.from('.hero-line-2', { y: 34, opacity: 0, duration: 0.95, delay: 0.3, ease: 'power3.out' });
+      gsap.from('.hero-cta', { y: 18, opacity: 0, duration: 0.7, delay: 0.42, stagger: 0.1, ease: 'power3.out' });
+    }, heroRef);
+    return () => ctx.revert();
+  }, []);
 
   const allFields = farms.flatMap((f) => f.fields || []);
 
   const loadFieldData = useCallback(async (fldId: number) => {
     try {
-      const [fldRes, dashRes, hsRes, histRes, soilRes, cropRes] = await Promise.all([
+      const [fldRes, dashRes, hsRes, histRes, soilRes, cropRes, fertRes] = await Promise.all([
         getField(fldId).catch(() => null),
         getDashboard(fldId).catch(() => null),
         getHotspots(fldId).catch(() => ({ data: [] })),
         api.get(`/fields/${fldId}/history`).catch(() => ({ data: { observations: [] } })),
         getSoilSamples(fldId).catch(() => ({ data: [] })),
         getCropRecommendations(fldId).catch(() => null),
+        getFertilizerRecommendations(fldId).catch(() => null),
       ]);
 
       if (fldRes?.data?.boundary_geojson) {
@@ -127,6 +167,7 @@ const Workspace: React.FC = () => {
       setActiveSoilSample(samples[0] || null);
 
       if (cropRes?.data) setCropRecs(cropRes.data);
+      if (fertRes?.data) setFertilizerPlan(fertRes.data);
     } catch (err) {
       console.error('Failed loading field state:', err);
     }
@@ -302,15 +343,17 @@ const Workspace: React.FC = () => {
       setActiveSoilSample(createdSample);
       setSoilStatus('Soil sample analyzed and saved.');
 
-      const [samplesRes, cropRes] = await Promise.all([
+      const [samplesRes, cropRes, fertRes] = await Promise.all([
         getSoilSamples(selectedFieldId),
         computeCropRecommendations(selectedFieldId, {
           season: seasonFilter,
           use_latest_sample: true,
         }),
+        getFertilizerRecommendations(selectedFieldId, createdSample.id),
       ]);
       setSoilSamples(samplesRes.data || []);
       setCropRecs(cropRes.data);
+      setFertilizerPlan(fertRes.data);
     } catch (err) {
       console.error('Soil submission failed:', err);
       setSoilStatus('Failed to save soil sample. Check backend connection.');
@@ -319,16 +362,109 @@ const Workspace: React.FC = () => {
     }
   };
 
+  const processSoilPdfFile = async (file: File) => {
+    setUploadingPdf(true);
+    setPdfParseError(null);
+    setPdfParseResult(null);
+    setSoilStatus(null);
+    try {
+      const res = await parseSoilReportPdf(file);
+      const data = res.data;
+      setPdfParseResult(data);
+      if (data.extraction_success && data.parsed_fields) {
+        const p = data.parsed_fields;
+        const nextForm = {
+          ...soilForm,
+          nitrogen_level: p.nitrogen_level || soilForm.nitrogen_level,
+          nitrogen_value: p.nitrogen_value != null ? String(p.nitrogen_value) : '',
+          phosphorus_level: p.phosphorus_level || soilForm.phosphorus_level,
+          phosphorus_value: p.phosphorus_value != null ? String(p.phosphorus_value) : '',
+          potassium_level: p.potassium_level || soilForm.potassium_level,
+          potassium_value: p.potassium_value != null ? String(p.potassium_value) : '',
+          ph_value: p.ph_value != null ? p.ph_value : soilForm.ph_value,
+          moisture_level: p.moisture_level || soilForm.moisture_level,
+          soil_texture: p.soil_texture || soilForm.soil_texture,
+          source: p.source || 'lab',
+          is_validated: p.is_validated ?? true,
+          notes: `Extracted from PDF: ${data.filename || file.name}`,
+        };
+        setSoilForm(nextForm);
+
+        // Immediately save extracted sample & compute Soil Result, Crop Recommendation, and Fertilizer Plan
+        setSubmittingSoil(true);
+        const createdRes = await createSoilSample(selectedFieldId, {
+          latitude: 23.0775,
+          longitude: 76.8513,
+          nitrogen_level: nextForm.nitrogen_level,
+          nitrogen_value: nextForm.nitrogen_value ? parseFloat(nextForm.nitrogen_value) : undefined,
+          phosphorus_level: nextForm.phosphorus_level,
+          phosphorus_value: nextForm.phosphorus_value ? parseFloat(nextForm.phosphorus_value) : undefined,
+          potassium_level: nextForm.potassium_level,
+          potassium_value: nextForm.potassium_value ? parseFloat(nextForm.potassium_value) : undefined,
+          ph_value: nextForm.ph_value,
+          moisture_level: nextForm.moisture_level,
+          soil_texture: nextForm.soil_texture,
+          sample_date: new Date().toISOString(),
+          source: nextForm.source,
+          is_validated: nextForm.is_validated,
+          notes: nextForm.notes,
+        });
+        const createdSample: SoilSample = createdRes.data;
+        setActiveSoilSample(createdSample);
+
+        const [samplesRes, cropRes, fertRes] = await Promise.all([
+          getSoilSamples(selectedFieldId),
+          computeCropRecommendations(selectedFieldId, {
+            season: seasonFilter,
+            use_latest_sample: true,
+          }),
+          getFertilizerRecommendations(selectedFieldId, createdSample.id),
+        ]);
+        setSoilSamples(samplesRes.data || []);
+        setCropRecs(cropRes.data);
+        setFertilizerPlan(fertRes.data);
+        setSoilStatus(`Processed "${data.filename || file.name}" and updated soil, crop, and fertilizer results.`);
+      } else {
+        setPdfParseError(
+          data.warning || 'Could not detect soil values automatically from this PDF. Check preview below or enter manually.'
+        );
+      }
+    } catch (err: any) {
+      setPdfParseError(err?.response?.data?.detail || 'Failed to upload or process soil PDF.');
+    } finally {
+      setUploadingPdf(false);
+      setSubmittingSoil(false);
+    }
+  };
+
+  const handleUploadSoilPdf = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) await processSoilPdfFile(file);
+  };
+
+  const handleSelectSample = async (s: SoilSample) => {
+    setActiveSoilSample(s);
+    try {
+      const fertRes = await getFertilizerRecommendations(selectedFieldId, s.id);
+      setFertilizerPlan(fertRes.data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const handleToggleValidate = async (s: SoilSample) => {
     try {
       const res = await updateSoilSample(s.id, { is_validated: !s.is_validated });
       if (activeSoilSample?.id === s.id) setActiveSoilSample(res.data);
-      const [samplesRes, cropRes] = await Promise.all([
+      const [samplesRes, cropRes, fertRes] = await Promise.all([
         getSoilSamples(selectedFieldId),
         computeCropRecommendations(selectedFieldId, { season: seasonFilter, use_latest_sample: true }),
+        getFertilizerRecommendations(selectedFieldId, activeSoilSample?.id ?? s.id),
       ]);
       setSoilSamples(samplesRes.data || []);
       setCropRecs(cropRes.data);
+      setFertilizerPlan(fertRes.data);
     } catch (err) {
       console.error(err);
     }
@@ -341,8 +477,12 @@ const Workspace: React.FC = () => {
       const next = samplesRes.data || [];
       setSoilSamples(next);
       if (activeSoilSample?.id === id) setActiveSoilSample(next[0] || null);
-      const cropRes = await getCropRecommendations(selectedFieldId);
+      const [cropRes, fertRes] = await Promise.all([
+        getCropRecommendations(selectedFieldId),
+        getFertilizerRecommendations(selectedFieldId),
+      ]);
       setCropRecs(cropRes.data);
+      setFertilizerPlan(fertRes.data);
     } catch (err) {
       console.error(err);
     }
@@ -408,10 +548,7 @@ const Workspace: React.FC = () => {
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-              <polygon points="3 6 12 2 21 6 18 18 6 21 3 6" />
-              <circle cx="12" cy="12" r="2.5" fill="currentColor" />
-            </svg>
+            <Sprout size={19} strokeWidth={2.3} />
           </div>
           <span>TerraScan</span>
         </div>
@@ -422,6 +559,7 @@ const Workspace: React.FC = () => {
             className={`step-pill ${stage === 1 ? 'active' : ''}`}
             onClick={() => setStage(1)}
           >
+            <MapPin size={14} strokeWidth={2.3} />
             <span className="step-num">01</span> Draw Field
           </button>
           <button
@@ -432,6 +570,7 @@ const Workspace: React.FC = () => {
               setStage(2);
             }}
           >
+            <Satellite size={14} strokeWidth={2.3} />
             <span className="step-num">02</span> Satellite Analysis
           </button>
           <button
@@ -442,6 +581,7 @@ const Workspace: React.FC = () => {
               setStage(3);
             }}
           >
+            <FlaskConical size={14} strokeWidth={2.3} />
             <span className="step-num">03</span> Soil &amp; Crop Results
           </button>
         </nav>
@@ -468,21 +608,95 @@ const Workspace: React.FC = () => {
           {allFields.length > 1 && (
             <button
               type="button"
-              className="btn btn-sm"
-              style={{ color: 'var(--red)' }}
+              className="btn btn-sm btn-topbar-ghost"
               onClick={handleDeleteCurrentField}
               title="Delete currently selected field"
             >
-              Delete
+              <Trash2 size={13} strokeWidth={2.2} /> Delete
             </button>
           )}
-          <button type="button" className="btn btn-sm" onClick={handleStartNewField}>
-            + Draw New Field
+          <button type="button" className="btn-gold-pill magnetic-btn" onClick={handleStartNewField}>
+            + Draw New Field <ArrowUpRight size={15} strokeWidth={2.4} />
           </button>
         </div>
       </header>
 
-      <main className="main-stage">
+      {/* EDITORIAL AERIAL HERO BANNER */}
+      <section ref={heroRef} className="hero-banner" aria-label="TerraScan Agricultural Overview">
+        <div className="hero-particles" aria-hidden="true">
+          {[0, 1, 2, 3, 4].map((n) => (
+            <Sprout
+              key={n}
+              size={14 + (n % 2) * 3}
+              className="hero-particle"
+              style={{
+                left: `${12 + n * 20}%`,
+                animationDuration: `${4.6 + n * 0.7}s`,
+                animationDelay: `${n * 0.8}s`,
+              }}
+            />
+          ))}
+        </div>
+        <div className="hero-inner">
+          <div className="hero-meta-chip hero-meta">
+            <span className="ring-pulse" />
+            <span>Sentinel-2 Optical · Sentinel-1 SAR · Lab Soil Verified</span>
+          </div>
+          <h1 className="hero-title">
+            <span className="hero-line-1" style={{ display: 'block' }}>Precision satellite &amp;</span>
+            <span className="hero-line-2 serif-italic" style={{ display: 'block' }}>smart field scouting</span>
+          </h1>
+          <p className="hero-sub hero-meta">
+            Dual-sensor satellite monitoring grounded with verified laboratory soil reports, crop suitability, and field-scaled fertilizer schedules.
+          </p>
+          <div className="hero-actions">
+            <button
+              type="button"
+              className="hero-btn-white hero-cta magnetic-btn"
+              onClick={() => {
+                handleStartNewField();
+                document.getElementById('workspace-stage')?.scrollIntoView({ behavior: 'smooth' });
+              }}
+            >
+              Outline Field <ArrowRight size={15} strokeWidth={2.4} />
+            </button>
+            <button
+              type="button"
+              className="hero-btn-secondary hero-cta"
+              onClick={() => {
+                setDrawingMode(false);
+                setStage(2);
+                document.getElementById('workspace-stage')?.scrollIntoView({ behavior: 'smooth' });
+              }}
+            >
+              <span className="hero-lime-circle" aria-hidden="true">
+                <Play size={13} fill="currentColor" strokeWidth={2} />
+              </span>
+              Explore Satellite Insights
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* SUBTLE SCIENTIFIC TELEMETRY STRIP */}
+      <div className="telemetry-strip grid-bg">
+        <div className="telemetry-strip-inner">
+          <div className="telemetry-item">
+            <Layers size={14} strokeWidth={2.3} color="var(--accent)" />
+            <span>20 m Harmonized Optical Composites (NDVI · NDMI · NDRE)</span>
+          </div>
+          <div className="telemetry-item">
+            <Radar size={14} strokeWidth={2.3} color="var(--accent)" />
+            <span>10 m Linear-Power SAR Backscatter &amp; Orbit Filtering</span>
+          </div>
+          <div className="telemetry-item">
+            <Compass size={14} strokeWidth={2.3} color="var(--accent)" />
+            <span>Active Field: <strong>{dashboard?.field_name || 'Select or draw plot'}</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <main id="workspace-stage" className="main-stage">
         {/* ================= STAGE 1: DRAW FIELD ================= */}
         {stage === 1 && (
           <div className="split-workspace">
@@ -498,12 +712,17 @@ const Workspace: React.FC = () => {
             />
 
             <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div>
-                <span className="badge badge-neutral">STEP 1 OF 3 · FIELD BOUNDARY</span>
-                <h2 style={{ marginTop: '0.5rem', fontSize: '1.3rem' }}>Outline your field on the map</h2>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', marginTop: '0.25rem' }}>
-                  Search your location on the map, click at least 3 corners around your plot, and click <strong>Save &amp; Analyze</strong> below (no extra click needed).
-                </p>
+              <div className="card-header-flex">
+                <div className="icon-box">
+                  <MapPin size={19} strokeWidth={2.3} />
+                </div>
+                <div>
+                  <div className="eyebrow-mono">STEP 1 OF 3 · FIELD BOUNDARY</div>
+                  <h2 style={{ marginTop: '0.2rem', fontSize: '1.28rem' }}>Outline your field on the map</h2>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.86rem', marginTop: '0.2rem' }}>
+                    Search your location on the map, click at least 3 corners around your plot, and click <strong>Save &amp; Analyze</strong> below (no extra click needed).
+                  </p>
+                </div>
               </div>
 
               <div className={pendingNewPolygon ? 'banner-info' : 'banner-warn'}>
@@ -625,20 +844,28 @@ const Workspace: React.FC = () => {
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
-                  <div>
-                    <span className="badge badge-neutral">STEP 2 OF 3 · SATELLITE COMPONENT</span>
-                    <h2 style={{ marginTop: '0.4rem', fontSize: '1.25rem' }}>
-                      {dashboard?.field_name || 'Field Satellite Scan'}
-                    </h2>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                      {dashboard?.latest_observation_date
-                        ? `Latest scene: ${new Date(dashboard.latest_observation_date).toLocaleDateString()} · ${dashboard.area_ha ?? '—'} ha`
-                        : 'No satellite observation recorded yet'}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.6rem' }}>
+                  <div className="card-header-flex">
+                    <div className="icon-box">
+                      <Satellite size={19} strokeWidth={2.3} />
+                    </div>
+                    <div>
+                      <div className="eyebrow-mono">STEP 2 OF 3 · SATELLITE COMPONENT</div>
+                      <h2 style={{ marginTop: '0.18rem', fontSize: '1.25rem' }}>
+                        {dashboard?.field_name || 'Field Satellite Scan'}
+                      </h2>
+                      <div style={{ fontSize: '0.79rem', color: 'var(--text-secondary)' }}>
+                        {dashboard?.latest_observation_date
+                          ? `Latest optical: ${new Date(dashboard.latest_observation_date).toLocaleDateString()} (${dashboard?.optical_timestamp_precision ?? 'exact'}) · ${dashboard.area_ha ?? '—'} ha`
+                          : 'No satellite observation recorded yet'}
+                        {dashboard?.optical_quality?.valid_pixel_pct != null && (
+                          <> · Clear pixels: {dashboard.optical_quality.valid_pixel_pct}%</>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <button type="button" className="btn btn-sm" onClick={handleRescanOnly} disabled={scanning}>
-                    {scanning ? 'Scanning...' : '↻ Re-scan'}
+                    <RefreshCw size={13} strokeWidth={2.3} /> {scanning ? 'Scanning...' : 'Re-scan'}
                   </button>
                 </div>
 
@@ -657,7 +884,7 @@ const Workspace: React.FC = () => {
                       className="score-bar-fill"
                       style={{
                         width: `${Math.min(100, Math.max(0, dashboard?.health_score ?? 0))}%`,
-                        backgroundColor: (dashboard?.health_score ?? 0) >= 80 ? '#16a34a' : (dashboard?.health_score ?? 0) >= 60 ? '#ca8a04' : '#ea580c',
+                        backgroundColor: (dashboard?.health_score ?? 0) >= 80 ? 'var(--green)' : (dashboard?.health_score ?? 0) >= 60 ? 'var(--yellow)' : 'var(--orange)',
                       }}
                     />
                   </div>
@@ -706,12 +933,19 @@ const Workspace: React.FC = () => {
                 <div style={{ padding: '0.75rem', borderRadius: '8px', background: 'var(--bg-page)', border: '1px solid var(--border)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
                     <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-                      SENTINEL-1 SAR RADAR (CLOUD-PROOF)
+                      SENTINEL-1 SAR RADAR ({dashboard?.radar_timestamp_precision === 'approximate' ? 'APPROX. MIGRATED DATE' : 'CLOUD-PROOF'})
                     </span>
                     <span className="badge badge-neutral">
                       {dashboard?.surface_wetness_status || 'Radar Moisture Proxy'}
                     </span>
                   </div>
+                  {(dashboard?.radar_observation_date || dashboard?.radar_quality?.orbit_pass) && (
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', marginBottom: '0.45rem' }}>
+                      {dashboard?.radar_observation_date && `Radar date: ${new Date(dashboard.radar_observation_date).toLocaleDateString()} (${dashboard?.radar_timestamp_precision ?? 'exact'})`}
+                      {dashboard?.radar_quality?.orbit_pass && ` · ${dashboard.radar_quality.orbit_pass} orbit ${dashboard.radar_quality.relative_orbit ?? ''}`}
+                      {dashboard?.radar_quality?.incidence_angle_deg != null && ` · ${dashboard.radar_quality.incidence_angle_deg}° inc.`}
+                    </div>
+                  )}
                   <div className="metric-grid-3">
                     <div className="metric-tile" style={{ background: 'var(--bg-surface)' }}>
                       <div className="metric-tile-label">S1 VV (dB)</div>
@@ -798,7 +1032,10 @@ const Workspace: React.FC = () => {
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
                         {dashboard?.phenology?.land_status || 'Seasonal curve'}
                         {dashboard?.phenology?.peak_ndvi != null && (
-                          <> · Peak NDVI <span className="mono">{dashboard.phenology.peak_ndvi}</span> ({dashboard.phenology.peak_date})</>
+                          <> · Season peak NDVI <span className="mono">{dashboard.phenology.peak_ndvi}</span> ({dashboard.phenology.peak_date})</>
+                        )}
+                        {dashboard?.phenology?.ndvi_change_per_week != null && (
+                          <> · {dashboard.phenology.ndvi_change_per_week >= 0 ? '+' : ''}{dashboard.phenology.ndvi_change_per_week}/wk</>
                         )}
                       </div>
                     </div>
@@ -819,15 +1056,123 @@ const Workspace: React.FC = () => {
             {/* LEFT: SUBMIT SOIL SAMPLE */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <form onSubmit={handleSubmitSoil} className="card" style={{ display: 'grid', gap: '0.85rem' }}>
-                <div>
-                  <span className="badge badge-neutral">STEP 3 OF 3 · GROUND TRUTH SOIL INPUT</span>
-                  <h2 style={{ marginTop: '0.4rem', fontSize: '1.25rem' }}>Submit Soil Sample</h2>
-                  <p style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
-                    Enter soil test values for <strong>{dashboard?.field_name || 'your field'}</strong> to generate your soil verdict, fertilizer guidance, and crop recommendations.
-                  </p>
+                <div className="card-header-flex">
+                  <div className="icon-box-gold">
+                    <FlaskConical size={19} strokeWidth={2.3} />
+                  </div>
+                  <div>
+                    <div className="eyebrow-mono">STEP 3 OF 3 · GROUND TRUTH SOIL INPUT</div>
+                    <h2 style={{ marginTop: '0.18rem', fontSize: '1.25rem' }}>Submit Soil Sample</h2>
+                    <p style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', marginTop: '0.18rem' }}>
+                      Choose manual entry or upload your soil lab PDF for <strong>{dashboard?.field_name || 'your field'}</strong> to unlock soil results, crop rankings, and fertilizer guidance.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mode-toggle-rail" role="tablist" aria-label="Soil input method">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={soilInputMode === 'manual'}
+                    className={`mode-toggle-btn ${soilInputMode === 'manual' ? 'active' : ''}`}
+                    onClick={() => setSoilInputMode('manual')}
+                  >
+                    <FileText size={14} strokeWidth={2.2} /> Manual Soil Entry
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={soilInputMode === 'pdf'}
+                    className={`mode-toggle-btn ${soilInputMode === 'pdf' ? 'active' : ''}`}
+                    onClick={() => setSoilInputMode('pdf')}
+                  >
+                    <Upload size={14} strokeWidth={2.2} /> Upload Soil Report PDF
+                  </button>
                 </div>
 
                 {soilStatus && <div className="banner-info">{soilStatus}</div>}
+
+                {soilInputMode === 'pdf' && (
+                  <div style={{ display: 'grid', gap: '0.75rem' }}>
+                    <div
+                      className="pdf-dropzone"
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const f = e.dataTransfer.files?.[0];
+                        if (f) processSoilPdfFile(f);
+                      }}
+                    >
+                      <strong style={{ fontSize: '0.9rem' }}>Drop or Upload Lab Soil Report (.pdf)</strong>
+                      <p style={{ fontSize: '0.79rem', color: 'var(--text-secondary)', maxWidth: '320px' }}>
+                        Extracts N, P, K (mg/kg or kg/ha), pH, moisture, and texture and immediately computes your soil, crop, and fertilizer results.
+                      </p>
+                      <label className="btn btn-primary btn-sm magnetic-btn" style={{ cursor: 'pointer' }}>
+                        {uploadingPdf || submittingSoil ? 'Processing PDF...' : 'Choose Soil PDF File'}
+                        <input
+                          type="file"
+                          accept=".pdf,application/pdf"
+                          onChange={handleUploadSoilPdf}
+                          disabled={uploadingPdf || submittingSoil}
+                          style={{ display: 'none' }}
+                        />
+                      </label>
+                    </div>
+
+                    {pdfParseError && (
+                      <div className="banner-err" style={{ display: 'grid', gap: '0.45rem' }}>
+                        <div>{pdfParseError}</div>
+                        {pdfParseResult?.text_preview && (
+                          <div className="mono" style={{ fontSize: '0.72rem', background: 'rgba(255,255,255,0.7)', padding: '0.45rem', borderRadius: '6px', maxHeight: '90px', overflowY: 'auto' }}>
+                            {pdfParseResult.text_preview}
+                          </div>
+                        )}
+                        <div>
+                          <button type="button" className="btn btn-sm" onClick={() => setSoilInputMode('manual')}>
+                            Enter Values Manually
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {pdfParseResult && pdfParseResult.extraction_success && (
+                      <div className="banner-info" style={{ display: 'grid', gap: '0.45rem' }}>
+                        <div>
+                          <strong>Processed from {pdfParseResult.filename || 'PDF'}:</strong>{' '}
+                          <span className="mono">
+                            N: {pdfParseResult.parsed_fields.nitrogen_value ?? pdfParseResult.parsed_fields.nitrogen_level ?? '—'} ·
+                            P: {pdfParseResult.parsed_fields.phosphorus_value ?? pdfParseResult.parsed_fields.phosphorus_level ?? '—'} ·
+                            K: {pdfParseResult.parsed_fields.potassium_value ?? pdfParseResult.parsed_fields.potassium_level ?? '—'} ·
+                            pH: {pdfParseResult.parsed_fields.ph_value ?? '—'}
+                            {pdfParseResult.parsed_fields.soil_texture ? ` · ${pdfParseResult.parsed_fields.soil_texture}` : ''}
+                          </span>
+                        </div>
+                        {pdfParseResult.unit_conversions.length > 0 && (
+                          <div style={{ fontSize: '0.76rem' }}>
+                            {pdfParseResult.unit_conversions.join(' · ')}
+                          </div>
+                        )}
+                        {pdfParseResult.missing_keys.length > 0 && (
+                          <div style={{ fontSize: '0.76rem', color: '#7d5406' }}>
+                            Not detected in PDF (retained form defaults): {pdfParseResult.missing_keys.join(', ')}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.2rem' }}>
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => setSoilInputMode('manual')}
+                          >
+                            Edit / Adjust Extracted Values
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {soilInputMode === 'manual' && (
+                <>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem' }}>
                   <label className="field-label">
@@ -918,6 +1263,8 @@ const Workspace: React.FC = () => {
                 <button type="submit" className="btn btn-primary" disabled={submittingSoil} style={{ padding: '0.7rem 1rem' }}>
                   {submittingSoil ? 'Analyzing Soil Sample...' : 'Submit Soil Sample & Compute Results'}
                 </button>
+                </>
+                )}
               </form>
 
               {/* Submitted Soil Samples History */}
@@ -947,7 +1294,7 @@ const Workspace: React.FC = () => {
                           N:{s.nitrogen_value ?? s.nitrogen_level} · P:{s.phosphorus_value ?? s.phosphorus_level} · K:{s.potassium_value ?? s.potassium_level} · pH {s.ph_value} ({s.soil_texture})
                         </div>
                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.45rem' }}>
-                          <button type="button" className="btn btn-sm btn-primary" onClick={() => setActiveSoilSample(s)}>
+                          <button type="button" className="btn btn-sm btn-primary" onClick={() => handleSelectSample(s)}>
                             View Result
                           </button>
                           <button type="button" className="btn btn-sm" onClick={() => handleToggleValidate(s)}>
@@ -1081,7 +1428,7 @@ const Workspace: React.FC = () => {
                             className="score-bar-fill"
                             style={{
                               width: `${c.suitability_score}%`,
-                              backgroundColor: c.suitability_score >= 82 ? '#16a34a' : c.suitability_score >= 68 ? '#ca8a04' : '#64748b',
+                              backgroundColor: c.suitability_score >= 82 ? 'var(--green)' : c.suitability_score >= 68 ? 'var(--yellow)' : 'var(--text-muted)',
                             }}
                           />
                         </div>
@@ -1097,10 +1444,130 @@ const Workspace: React.FC = () => {
                   <button type="button" className="btn" onClick={() => setStage(2)}>
                     ← Back to Satellite Scan
                   </button>
-                  <button type="button" className="btn btn-primary" onClick={handleDownloadPdf} disabled={downloadingPdf}>
-                    {downloadingPdf ? 'Generating PDF...' : 'Download Full Field PDF Report'}
+                  <button type="button" className="btn btn-primary magnetic-btn" onClick={handleDownloadPdf} disabled={downloadingPdf}>
+                    <Download size={14} strokeWidth={2.2} /> {downloadingPdf ? 'Generating PDF...' : 'Download Full Field PDF Report'}
                   </button>
                 </div>
+              </div>
+
+              {/* 3. FERTILIZER RECOMMENDATION SYSTEM (BELOW CROP RECOMMENDATION) */}
+              <div className="card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.8rem' }}>
+                  <div className="card-header-flex">
+                    <div className="icon-box">
+                      <Sparkles size={18} strokeWidth={2.3} />
+                    </div>
+                    <div>
+                      <h3>Fertilizer Recommendation System</h3>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        {fertilizerPlan
+                          ? `${fertilizerPlan.crop_type} · ${fertilizerPlan.area_ha} ha (${fertilizerPlan.soil_texture || 'Loamy'})`
+                          : 'Nutrient application schedule scaled to your field'}
+                      </div>
+                    </div>
+                  </div>
+                  {fertilizerPlan && (
+                    <span className={`badge ${fertilizerPlan.can_prescribe_dosage ? 'badge-healthy' : fertilizerPlan.status === 'unvalidated_estimate' ? 'badge-mild' : 'badge-neutral'}`}>
+                      {fertilizerPlan.can_prescribe_dosage
+                        ? 'Lab-Verified Dosage'
+                        : fertilizerPlan.status === 'unvalidated_estimate'
+                          ? 'Unvalidated Estimate'
+                          : 'Soil Test Required'}
+                    </span>
+                  )}
+                </div>
+
+                {!fertilizerPlan || fertilizerPlan.status === 'soil_sample_required' ? (
+                  <div className="banner-warn">
+                    {fertilizerPlan?.summary || 'Submit manual soil inputs or upload a soil lab PDF on the left to generate NPK and pH fertilizer recommendations.'}
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gap: '0.8rem' }}>
+                    <div className={fertilizerPlan.can_prescribe_dosage ? 'banner-info' : 'banner-warn'}>
+                      {fertilizerPlan.summary}
+                    </div>
+
+                    <div style={{ display: 'grid', gap: '0.6rem' }}>
+                      {fertilizerPlan.recommendations.map((item) => (
+                        <div
+                          key={item.nutrient}
+                          className={`fert-nutrient-card priority-${item.priority}`}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <div>
+                              <strong>{item.nutrient}</strong>{' '}
+                              <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                · {item.product}
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                              <span className={`badge ${levelBadge(item.soil_level)}`}>
+                                Soil {item.soil_level.toUpperCase()}
+                                {item.measured_mg_kg != null ? ` (${item.measured_mg_kg} mg/kg)` : ''}
+                              </span>
+                              {item.rate_kg_ha != null ? (
+                                <span className="badge badge-healthy mono">
+                                  {item.rate_kg_ha > 0 ? `${item.rate_kg_ha} kg/ha` : '0 kg/ha (Skip)'}
+                                </span>
+                              ) : (
+                                <span className="badge badge-neutral">Verify sample for kg/ha</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {item.action}
+                            {item.total_field_kg != null && item.total_field_kg > 0 && (
+                              <span className="mono" style={{ fontWeight: 500, color: 'var(--accent)', marginLeft: '0.45rem' }}>
+                                (Total for field: {item.total_field_kg} kg)
+                              </span>
+                            )}
+                          </div>
+
+                          <div style={{ fontSize: '0.79rem', color: 'var(--text-secondary)' }}>
+                            <strong>Schedule:</strong> {item.timing}
+                          </div>
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                            {item.reasoning}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {fertilizerPlan.ph_amendment && (
+                      <div className="banner-warn" style={{ display: 'grid', gap: '0.25rem' }}>
+                        <strong>
+                          {fertilizerPlan.ph_amendment.title}
+                          {fertilizerPlan.ph_amendment.rate_kg_ha != null && (
+                            <span className="mono"> · {fertilizerPlan.ph_amendment.rate_kg_ha} kg/ha ({fertilizerPlan.ph_amendment.total_field_kg} kg total)</span>
+                          )}
+                        </strong>
+                        <span style={{ fontSize: '0.8rem' }}>
+                          <strong>Timing:</strong> {fertilizerPlan.ph_amendment.timing} — {fertilizerPlan.ph_amendment.reasoning}
+                        </span>
+                      </div>
+                    )}
+
+                    {fertilizerPlan.total_field_materials.length > 0 && (
+                      <div style={{ padding: '0.75rem', borderRadius: '10px', background: 'var(--bg-subtle)', border: '1px solid var(--border)' }}>
+                        <div className="metric-tile-label" style={{ marginBottom: '0.4rem' }}>
+                          TOTAL FIELD MATERIAL ESTIMATE ({fertilizerPlan.area_ha} HA)
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
+                          {fertilizerPlan.total_field_materials.map((m) => (
+                            <div key={m.product} className="badge badge-neutral mono" style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
+                              {m.product.split(' ')[0]}: {m.total_kg} kg ({m.bags_50kg} × 50kg bags)
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', lineHeight: 1.45 }}>
+                      {fertilizerPlan.application_tips.join(' ')} {fertilizerPlan.satellite_context.join(' ')} {fertilizerPlan.limitation}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

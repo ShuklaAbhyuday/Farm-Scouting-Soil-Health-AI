@@ -11,14 +11,16 @@ from backend.models.field import Field
 
 app = FastAPI(title="EPICS Farm Scouting API")
 
-# Allow localhost for dev, plus any Vercel deployment URL
+# Allow localhost for dev, plus any Vercel or configured frontend URL(s)
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
 ]
-vercel_url = os.getenv("FRONTEND_URL", "")
-if vercel_url:
-    ALLOWED_ORIGINS.append(vercel_url)
+raw_frontend_urls = os.getenv("FRONTEND_URL", "")
+for origin in raw_frontend_urls.split(","):
+    cleaned = origin.strip().rstrip("/")
+    if cleaned and cleaned not in ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS.append(cleaned)
 
 app.add_middleware(
     CORSMiddleware,
@@ -85,6 +87,11 @@ def on_startup():
     seed_default_data()
     gee = get_gee_service()
     gee.initialize()
+
+@app.get("/")
+def root_status():
+    return {"status": "ok", "service": "TerraScan API"}
+
 
 @app.get("/health")
 def health_check():
