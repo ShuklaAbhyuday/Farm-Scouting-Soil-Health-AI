@@ -54,7 +54,9 @@ class GEEService:
             .And(scl.neq(9))
             .And(scl.neq(10))
         )
-        return image.updateMask(mask).divide(10000).copyProperties(image, ['system:time_start', 'CLOUDY_PIXEL_PERCENTAGE'])
+        return ee.Image(
+            image.updateMask(mask).divide(10000).copyProperties(image, ['system:time_start', 'CLOUDY_PIXEL_PERCENTAGE'])
+        )
 
     def calculate_indices(self, image):
         """Calculate NDVI, EVI, SAVI, GNDVI, NDMI, and NDRE from Sentinel-2 bands."""
