@@ -3,6 +3,7 @@ import numpy as np
 from backend.config import settings
 import json, base64, logging
 import random
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -125,7 +126,7 @@ class GEEService:
             logger.warning(f"Sentinel-1 fetch skipped/failed: {e}")
             return None
 
-    def _get_time_series(self, col, ee_geom, limit=12):
+    def _get_time_series(self, col, ee_geom, limit=8):
         """Extract up to `limit` historical Sentinel-2 dates in a single server-side batch call."""
         try:
             recent = col.sort('system:time_start', False).limit(limit)
@@ -135,7 +136,7 @@ class GEEService:
                 vals = masked.reduceRegion(
                     reducer=ee.Reducer.mean(),
                     geometry=ee_geom,
-                    scale=20,
+                    scale=30,
                     maxPixels=1e8,
                     bestEffort=True,
                 )
@@ -168,23 +169,109 @@ class GEEService:
             return []
 
     def analyze_field(self, boundary_geojson, start_date, end_date, cloud_max=20, zone_geoms=None):
-        """Full pipeline: Sentinel-2 optical + 6-month phenology series + Sentinel-1 SAR radar."""
+        """Full pipeline: Sentinel-2 optical + phenology series + Sentinel-1 SAR radar in parallel."""
         import geojson
         geom = geojson.loads(boundary_geojson)
         ee_geom = ee.Geometry(geom)
 
-        s1_stats = self._get_sentinel1_stats(ee_geom, end_date)
         col = self.get_sentinel2_collection(ee_geom, start_date, end_date, cloud_max)
-        raw_image = col.sort('system:time_start', False).first()
+        recent_col = col.sort('system:time_start', False).limit(5)
 
-        meta = None
-        if raw_image is not None:
+        def _fetch_s2_main():
+            raw_image = col.sort('system:time_start', False).first()
+            if raw_image is None:
+                return None
             try:
                 meta = raw_image.toDictionary(['system:time_start', 'CLOUDY_PIXEL_PERCENTAGE']).getInfo()
             except Exception:
-                meta = None
+                return None
+            if not meta:
+                return None
 
-        if not meta:
+            image = self.calculate_indices(self.mask_clouds(raw_image)).select(OPTICAL_BANDS)
+            reducer = (
+                ee.Reducer.mean()
+                .combine(ee.Reducer.minMax(), sharedInputs=True)
+                .combine(ee.Reducer.stdDev(), sharedInputs=True)
+            )
+            stats = image.reduceRegion(
+                reducer=reducer,
+                geometry=ee_geom,
+                scale=20,
+                maxPixels=1e9,
+                bestEffort=True,
+            ).getInfo()
+
+            if not stats or stats.get('NDVI_mean') is None:
+                composite = recent_col.map(self.mask_clouds).median()
+                image = self.calculate_indices(composite).select(OPTICAL_BANDS)
+                stats = image.reduceRegion(
+                    reducer=reducer,
+                    geometry=ee_geom,
+                    scale=20,
+                    maxPixels=1e9,
+                    bestEffort=True,
+                ).getInfo()
+
+            if not stats or stats.get('NDVI_mean') is None:
+                return None
+
+            zone_stats = {}
+            if zone_geoms:
+                features = [
+                    ee.Feature(ee.Geometry(z_geo), {'cell_idx': idx})
+                    for idx, z_geo in enumerate(zone_geoms)
+                ]
+                rr = image.reduceRegions(
+                    collection=ee.FeatureCollection(features),
+                    reducer=ee.Reducer.mean(),
+                    scale=10,
+                ).getInfo()
+
+                for feat in rr.get('features', []):
+                    props = feat.get('properties', {})
+                    c_idx = props.get('cell_idx')
+                    if c_idx is not None and props.get('NDVI') is not None:
+                        zone_stats[int(c_idx)] = {
+                            'NDVI': float(props['NDVI']),
+                            'NDMI': float(props.get('NDMI') if props.get('NDMI') is not None else stats.get('NDMI_mean', 0.0)),
+                            'NDRE': float(props.get('NDRE') if props.get('NDRE') is not None else stats.get('NDRE_mean', 0.0)),
+                        }
+
+                if len(zone_stats) < len(zone_geoms):
+                    missing = [
+                        ee.Feature(ee.Geometry(zone_geoms[idx]), {'cell_idx': idx})
+                        for idx in range(len(zone_geoms))
+                        if idx not in zone_stats
+                    ]
+                    if missing:
+                        comp_img = self.calculate_indices(recent_col.map(self.mask_clouds).median()).select(OPTICAL_BANDS)
+                        rr_comp = comp_img.reduceRegions(
+                            collection=ee.FeatureCollection(missing),
+                            reducer=ee.Reducer.mean(),
+                            scale=10,
+                        ).getInfo()
+                        for feat in rr_comp.get('features', []):
+                            props = feat.get('properties', {})
+                            c_idx = props.get('cell_idx')
+                            if c_idx is not None and props.get('NDVI') is not None:
+                                zone_stats[int(c_idx)] = {
+                                    'NDVI': float(props['NDVI']),
+                                    'NDMI': float(props.get('NDMI') if props.get('NDMI') is not None else stats.get('NDMI_mean', 0.0)),
+                                    'NDRE': float(props.get('NDRE') if props.get('NDRE') is not None else stats.get('NDRE_mean', 0.0)),
+                                }
+
+            return {'meta': meta, 'stats': stats, 'zone_stats': zone_stats}
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_s1 = pool.submit(self._get_sentinel1_stats, ee_geom, end_date)
+            f_s2 = pool.submit(_fetch_s2_main)
+            f_ts = pool.submit(self._get_time_series, col, ee_geom, 8)
+            s1_stats = f_s1.result()
+            s2_res = f_s2.result()
+            time_series = f_ts.result()
+
+        if not s2_res:
             if not s1_stats:
                 return None
             return {
@@ -198,91 +285,17 @@ class GEEService:
                 'ndmi_stats': {'NDMI_mean': 0.0, 'NDMI_min': 0.0, 'NDMI_max': 0.0, 'NDMI_stdDev': 0.0},
                 'ndre_stats': {'NDRE_mean': 0.0, 'NDRE_min': 0.0, 'NDRE_max': 0.0, 'NDRE_stdDev': 0.0},
                 'zone_stats': {},
-                'time_series': [],
+                'time_series': time_series,
                 'is_demo': False,
                 'cloud_cover': 100.0,
                 'acquisition_date': s1_stats['acquisition_date'],
             }
 
+        meta = s2_res['meta']
+        stats = s2_res['stats']
+        zone_stats = s2_res['zone_stats']
         time_start = meta.get('system:time_start')
         cloud_pct = meta.get('CLOUDY_PIXEL_PERCENTAGE')
-
-        image = self.calculate_indices(self.mask_clouds(raw_image)).select(OPTICAL_BANDS)
-        reducer = (
-            ee.Reducer.mean()
-            .combine(ee.Reducer.minMax(), sharedInputs=True)
-            .combine(ee.Reducer.stdDev(), sharedInputs=True)
-        )
-        stats = image.reduceRegion(
-            reducer=reducer,
-            geometry=ee_geom,
-            scale=20,
-            maxPixels=1e9,
-            bestEffort=True,
-        ).getInfo()
-
-        if not stats or stats.get('NDVI_mean') is None:
-            composite = col.map(self.mask_clouds).median()
-            image = self.calculate_indices(composite).select(OPTICAL_BANDS)
-            stats = image.reduceRegion(
-                reducer=reducer,
-                geometry=ee_geom,
-                scale=20,
-                maxPixels=1e9,
-                bestEffort=True,
-            ).getInfo()
-
-        if not stats or stats.get('NDVI_mean') is None:
-            if not s1_stats:
-                return None
-
-        # Per-zone statistics in one batch reduceRegions call
-        zone_stats = {}
-        if zone_geoms and stats and stats.get('NDVI_mean') is not None:
-            features = [
-                ee.Feature(ee.Geometry(z_geo), {'cell_idx': idx})
-                for idx, z_geo in enumerate(zone_geoms)
-            ]
-            rr = image.reduceRegions(
-                collection=ee.FeatureCollection(features),
-                reducer=ee.Reducer.mean(),
-                scale=10,
-            ).getInfo()
-
-            for feat in rr.get('features', []):
-                props = feat.get('properties', {})
-                c_idx = props.get('cell_idx')
-                if c_idx is not None and props.get('NDVI') is not None:
-                    zone_stats[int(c_idx)] = {
-                        'NDVI': float(props['NDVI']),
-                        'NDMI': float(props.get('NDMI') if props.get('NDMI') is not None else stats.get('NDMI_mean', 0.0)),
-                        'NDRE': float(props.get('NDRE') if props.get('NDRE') is not None else stats.get('NDRE_mean', 0.0)),
-                    }
-
-            if len(zone_stats) < len(zone_geoms):
-                missing = [
-                    ee.Feature(ee.Geometry(zone_geoms[idx]), {'cell_idx': idx})
-                    for idx in range(len(zone_geoms))
-                    if idx not in zone_stats
-                ]
-                if missing:
-                    comp_img = self.calculate_indices(col.map(self.mask_clouds).median()).select(OPTICAL_BANDS)
-                    rr_comp = comp_img.reduceRegions(
-                        collection=ee.FeatureCollection(missing),
-                        reducer=ee.Reducer.mean(),
-                        scale=10,
-                    ).getInfo()
-                    for feat in rr_comp.get('features', []):
-                        props = feat.get('properties', {})
-                        c_idx = props.get('cell_idx')
-                        if c_idx is not None and props.get('NDVI') is not None:
-                            zone_stats[int(c_idx)] = {
-                                'NDVI': float(props['NDVI']),
-                                'NDMI': float(props.get('NDMI') if props.get('NDMI') is not None else stats.get('NDMI_mean', 0.0)),
-                                'NDRE': float(props.get('NDRE') if props.get('NDRE') is not None else stats.get('NDRE_mean', 0.0)),
-                            }
-
-        time_series = self._get_time_series(col, ee_geom, limit=12)
 
         def _pack(name):
             return {
